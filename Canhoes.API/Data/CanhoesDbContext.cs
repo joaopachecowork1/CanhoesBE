@@ -25,7 +25,7 @@ public class CanhoesDbContext : DbContext
     // Hub / Feed (used by Canhões feed page)
     public DbSet<HubPostEntity> HubPosts => Set<HubPostEntity>();
     public DbSet<HubPostLikeEntity> HubPostLikes => Set<HubPostLikeEntity>();
-    public DbSet<HubPostCommentEntity> HubPostComments => Set<HubPostComments>();
+    public DbSet<HubPostCommentEntity> HubPostComments => Set<HubPostCommentEntity>();
     public DbSet<HubPostReactionEntity> HubPostReactions => Set<HubPostReactionEntity>();
     public DbSet<HubPostCommentReactionEntity> HubPostCommentReactions => Set<HubPostCommentReactionEntity>();
 
