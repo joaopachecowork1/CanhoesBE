@@ -1,10 +1,11 @@
-using Microsoft.AspNetCore.Authorization;
+ï»¿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
+using Canhoes.Api.Startup;
 
 namespace Canhoes.Api.Controllers;
 
@@ -13,6 +14,7 @@ namespace Canhoes.Api.Controllers;
 [Authorize]
 public partial class CanhoesController : ControllerBase
 {
+    private const string DefaultEventId = EventContextDefaults.DefaultEventId;
     private readonly CanhoesDbContext _db;
     private readonly IWebHostEnvironment _env;
 
@@ -40,32 +42,32 @@ public partial class CanhoesController : ControllerBase
         if (!IsAdmin()) return Forbid();
 
         var catsPending = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.Status == "pending")
+            .Where(p => p.EventId == DefaultEventId && p.Status == "pending")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var catsApproved = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.Status == "approved")
+            .Where(p => p.EventId == DefaultEventId && p.Status == "approved")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var catsRejected = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.Status == "rejected")
+            .Where(p => p.EventId == DefaultEventId && p.Status == "rejected")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measApproved = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.Status == "approved")
+            .Where(p => p.EventId == DefaultEventId && p.Status == "approved")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measPending = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.Status == "pending")
+            .Where(p => p.EventId == DefaultEventId && p.Status == "pending")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measRejected = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.Status == "rejected")
+            .Where(p => p.EventId == DefaultEventId && p.Status == "rejected")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
@@ -98,7 +100,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<AwardCategoryDto>>> GetCategories(CancellationToken ct)
     {
         var cats = await _db.AwardCategories.AsNoTracking()
-            .Where(c => c.IsActive)
+            .Where(c => c.EventId == DefaultEventId && c.IsActive)
             .OrderBy(c => c.SortOrder)
             .ToListAsync(ct);
         return cats.Select(ToAwardCategoryDto).ToList();
@@ -107,7 +109,7 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("nominees")]
     public async Task<ActionResult<List<NomineeDto>>> GetNominees([FromQuery] string? categoryId, CancellationToken ct)
     {
-        var q = _db.Nominees.AsNoTracking();
+        var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId);
         if (!string.IsNullOrWhiteSpace(categoryId)) q = q.Where(n => n.CategoryId == categoryId);
 
         // Public list: show approved nominees. If nominations are visible, show approved + pending.
@@ -124,7 +126,7 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("measures")]
     public async Task<ActionResult<List<GalaMeasureDto>>> GetMeasures(CancellationToken ct)
     {
-        var list = await _db.Measures.AsNoTracking().Where(m => m.IsActive)
+        var list = await _db.Measures.AsNoTracking().Where(m => m.EventId == DefaultEventId && m.IsActive)
             .OrderByDescending(m => m.CreatedAtUtc).ToListAsync(ct);
         return list.Select(m => new GalaMeasureDto(m.Id, m.Text, m.IsActive, new DateTimeOffset(m.CreatedAtUtc, TimeSpan.Zero))).ToList();
     }
@@ -146,6 +148,7 @@ public partial class CanhoesController : ControllerBase
         var nominee = new NomineeEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             CategoryId = string.IsNullOrWhiteSpace(req.CategoryId) ? null : req.CategoryId,
             Title = req.Title,
             SubmittedByUserId = userId,
@@ -169,6 +172,7 @@ public partial class CanhoesController : ControllerBase
         var p = new CategoryProposalEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             Name = req.Name.Trim(),
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
             ProposedByUserId = userId,
@@ -190,6 +194,7 @@ public partial class CanhoesController : ControllerBase
         var p = new MeasureProposalEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             Text = req.Text.Trim(),
             ProposedByUserId = userId,
             Status = "pending",
@@ -204,7 +209,7 @@ public partial class CanhoesController : ControllerBase
     [RequestSizeLimit(15_000_000)]
     public async Task<ActionResult<NomineeDto>> UploadNomineeImage([FromRoute] string id, IFormFile file, CancellationToken ct)
     {
-        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id, ct);
+        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id && n.EventId == DefaultEventId, ct);
         if (nominee is null) return NotFound();
 
         if (file.Length <= 0) return BadRequest("Empty file");
@@ -232,7 +237,11 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<VoteDto>>> GetMyVotes(CancellationToken ct)
     {
         var userId = HttpContext.GetUserId();
-        var votes = await _db.Votes.AsNoTracking().Where(v => v.UserId == userId).ToListAsync(ct);
+        var categoryIds = await _db.AwardCategories.AsNoTracking()
+            .Where(c => c.EventId == DefaultEventId)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        var votes = await _db.Votes.AsNoTracking().Where(v => v.UserId == userId && categoryIds.Contains(v.CategoryId)).ToListAsync(ct);
         return votes.Select(v => new VoteDto(v.Id, v.CategoryId, v.NomineeId, userId, v.UpdatedAtUtc)).ToList();
     }
 
@@ -246,7 +255,7 @@ public partial class CanhoesController : ControllerBase
 
         // Validate nominee exists and is approved
         var nominee = await _db.Nominees.AsNoTracking()
-            .FirstOrDefaultAsync(n => n.Id == req.NomineeId && n.CategoryId == req.CategoryId, ct);
+            .FirstOrDefaultAsync(n => n.Id == req.NomineeId && n.EventId == DefaultEventId && n.CategoryId == req.CategoryId, ct);
         if (nominee is null || nominee.Status != "approved") return BadRequest("Invalid nominee.");
 
         // Upsert (unique per category per user)
@@ -281,9 +290,10 @@ public partial class CanhoesController : ControllerBase
         if (!(state.ResultsVisible || state.Phase == "gala" || IsAdmin())) return Forbid();
 
         var categories = await _db.AwardCategories.AsNoTracking().Where(c => c.IsActive)
+            .Where(c => c.EventId == DefaultEventId)
             .OrderBy(c => c.SortOrder).ToListAsync(ct);
 
-        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.Status == "approved" && n.CategoryId != null).ToListAsync(ct);
+        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId && n.Status == "approved" && n.CategoryId != null).ToListAsync(ct);
         var votes = await _db.Votes.AsNoTracking().ToListAsync(ct);
 
         var result = new List<CanhoesCategoryResultDto>();
@@ -332,6 +342,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<WishlistItemDto>>> GetWishlist(CancellationToken ct)
     {
         var items = await _db.WishlistItems.AsNoTracking()
+            .Where(x => x.EventId == DefaultEventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
             .ToListAsync(ct);
         return items.Select(x => new WishlistItemDto(
@@ -350,6 +361,7 @@ public partial class CanhoesController : ControllerBase
         var item = new WishlistItemEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             UserId = userId,
             Title = req.Title.Trim(),
             Url = string.IsNullOrWhiteSpace(req.Url) ? null : req.Url.Trim(),
@@ -370,7 +382,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<IActionResult> UploadWishlistImage([FromRoute] string id, IFormFile file, CancellationToken ct)
     {
         var userId = HttpContext.GetUserId();
-        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (item is null) return NotFound();
         if (item.UserId != userId && !IsAdmin()) return Forbid();
 
@@ -398,7 +410,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<IActionResult> DeleteWishlistItem([FromRoute] string id, CancellationToken ct)
     {
         var userId = HttpContext.GetUserId();
-        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (item is null) return NotFound();
         if (item.UserId != userId && !IsAdmin()) return Forbid();
 
@@ -422,7 +434,7 @@ public partial class CanhoesController : ControllerBase
             ? $"canhoes{DateTime.UtcNow.Year}"
             : req.EventCode.Trim();
 
-        // ? IMPROVEMENT: Apagar TODOS os draws anteriores (não só o primeiro)
+        // ? IMPROVEMENT: Apagar TODOS os draws anteriores (nÃ£o sÃ³ o primeiro)
         var existingDraws = await _db.SecretSantaDraws
             .Where(x => x.EventCode == eventCode)
             .ToListAsync(ct);
@@ -438,7 +450,7 @@ public partial class CanhoesController : ControllerBase
             await _db.SaveChangesAsync(ct);
         }
 
-        // ? IMPROVEMENT: Validação de users mínimos
+        // ? IMPROVEMENT: ValidaÃ§Ã£o de users mÃ­nimos
         var users = await _db.Users.AsNoTracking()
             .OrderBy(u => u.Id)
             .ToListAsync(ct);
@@ -462,7 +474,7 @@ public partial class CanhoesController : ControllerBase
                 (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
             }
 
-            // Validar que ninguém tirou a si próprio
+            // Validar que ninguÃ©m tirou a si prÃ³prio
             isValid = true;
             for (var i = 0; i < users.Count; i++)
             {
@@ -487,7 +499,7 @@ public partial class CanhoesController : ControllerBase
 
                 _db.SecretSantaDraws.Add(draw);
 
-                // Criar assignments (cada user dá ao próximo)
+                // Criar assignments (cada user dÃ¡ ao prÃ³ximo)
                 for (var i = 0; i < users.Count; i++)
                 {
                     _db.SecretSantaAssignments.Add(new SecretSantaAssignmentEntity
@@ -510,7 +522,7 @@ public partial class CanhoesController : ControllerBase
             }
         }
 
-        // Se chegou aqui, falhou após 100 tentativas
+        // Se chegou aqui, falhou apÃ³s 100 tentativas
         return BadRequest($"Could not create a valid draw after {maxAttempts} attempts. Please try again.");
     }
 
@@ -577,6 +589,7 @@ public partial class CanhoesController : ControllerBase
 
         var cats = await _db.AwardCategories
             .AsNoTracking()
+            .Where(x => x.EventId == DefaultEventId)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
             .ToListAsync(ct);
@@ -597,7 +610,7 @@ public partial class CanhoesController : ControllerBase
         if (!IsAdmin()) return Forbid();
         if (string.IsNullOrWhiteSpace(id)) return BadRequest("id is required.");
 
-        var cat = await _db.AwardCategories.SingleOrDefaultAsync(x => x.Id == id, ct);
+        var cat = await _db.AwardCategories.SingleOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (cat is null) return NotFound();
 
         if (!string.IsNullOrWhiteSpace(req.Name)) cat.Name = req.Name.Trim();
@@ -628,10 +641,11 @@ public partial class CanhoesController : ControllerBase
         if (!Enum.TryParse<AwardCategoryKind>(req.Kind, ignoreCase: true, out var kind))
             return BadRequest("Invalid category kind.");
 
-        var maxSort = await _db.AwardCategories.MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
+        var maxSort = await _db.AwardCategories.Where(c => c.EventId == DefaultEventId).MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
         var cat = new AwardCategoryEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             Name = req.Name.Trim(),
             SortOrder = req.SortOrder ?? (maxSort + 1),
             Kind = kind,
@@ -654,8 +668,12 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<UserVoteDto>>> GetMyUserVotes(CancellationToken ct)
     {
         var userId = HttpContext.GetUserId();
+        var categoryIds = await _db.AwardCategories.AsNoTracking()
+            .Where(c => c.EventId == DefaultEventId)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
         var list = await _db.UserVotes.AsNoTracking()
-            .Where(v => v.VoterUserId == userId)
+            .Where(v => v.VoterUserId == userId && categoryIds.Contains(v.CategoryId))
             .OrderByDescending(v => v.UpdatedAtUtc)
             .ToListAsync(ct);
 
@@ -670,7 +688,7 @@ public partial class CanhoesController : ControllerBase
 
         var userId = HttpContext.GetUserId();
 
-        var cat = await _db.AwardCategories.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CategoryId, ct);
+        var cat = await _db.AwardCategories.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CategoryId && c.EventId == DefaultEventId, ct);
         if (cat is null || cat.Kind != AwardCategoryKind.UserVote) return BadRequest("Invalid category.");
 
         var targetExists = await _db.Users.AsNoTracking().AnyAsync(u => u.Id == req.TargetUserId, ct);
@@ -703,9 +721,9 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<PendingAdminDto>> AdminPending(CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.Status == "pending").OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
-        var cats = await _db.CategoryProposals.AsNoTracking().Where(p => p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
-        var meas = await _db.MeasureProposals.AsNoTracking().Where(p => p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
+        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId && n.Status == "pending").OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
+        var cats = await _db.CategoryProposals.AsNoTracking().Where(p => p.EventId == DefaultEventId && p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
+        var meas = await _db.MeasureProposals.AsNoTracking().Where(p => p.EventId == DefaultEventId && p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
 
         return new PendingAdminDto(
             nominees.Select(ToNomineeDto).ToList(),
@@ -718,7 +736,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<NomineeDto>> AdminSetNomineeCategory([FromRoute] string id, [FromBody] SetNomineeCategoryRequest req, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id, ct);
+        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id && n.EventId == DefaultEventId, ct);
         if (nominee is null) return NotFound();
         nominee.CategoryId = string.IsNullOrWhiteSpace(req.CategoryId) ? null : req.CategoryId;
         await _db.SaveChangesAsync(ct);
@@ -729,14 +747,15 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<AwardCategoryDto>> ApproveCategoryProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (p is null) return NotFound();
         p.Status = "approved";
 
-        var maxSort = await _db.AwardCategories.MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
+        var maxSort = await _db.AwardCategories.Where(c => c.EventId == DefaultEventId).MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
         var cat = new AwardCategoryEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             Name = p.Name,
             SortOrder = maxSort + 1,
             IsActive = true
@@ -750,7 +769,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<CategoryProposalDto>> RejectCategoryProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (p is null) return NotFound();
         p.Status = "rejected";
         await _db.SaveChangesAsync(ct);
@@ -761,12 +780,13 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<GalaMeasureDto>> ApproveMeasureProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (p is null) return NotFound();
         p.Status = "approved";
         var m = new GalaMeasureEntity
         {
             Id = Guid.NewGuid().ToString(),
+            EventId = DefaultEventId,
             Text = p.Text,
             IsActive = true,
             CreatedAtUtc = DateTime.UtcNow
@@ -788,6 +808,7 @@ public partial class CanhoesController : ControllerBase
             : status.Trim().ToLowerInvariant();
 
         IQueryable<MeasureProposalEntity> q = _db.MeasureProposals.AsNoTracking();
+        q = q.Where(p => p.EventId == DefaultEventId);
         if (normalized is "pending" or "approved" or "rejected")
         {
             q = q.Where(p => p.Status == normalized);
@@ -810,7 +831,7 @@ public partial class CanhoesController : ControllerBase
         if (!IsAdmin()) return Forbid();
         if (string.IsNullOrWhiteSpace(id)) return BadRequest("id is required.");
 
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (p is null) return NotFound();
 
         if (!string.IsNullOrWhiteSpace(req.Text))
@@ -838,7 +859,7 @@ public partial class CanhoesController : ControllerBase
         if (!IsAdmin()) return Forbid();
         if (string.IsNullOrWhiteSpace(id)) return BadRequest("id is required.");
 
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (p is null) return NotFound();
 
         _db.MeasureProposals.Remove(p);
@@ -850,7 +871,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<MeasureProposalDto>> RejectMeasureProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (p is null) return NotFound();
         p.Status = "rejected";
         await _db.SaveChangesAsync(ct);
@@ -861,7 +882,14 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<object>> AdminVotes(CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var votes = await _db.Votes.AsNoTracking().OrderByDescending(v => v.UpdatedAtUtc).ToListAsync(ct);
+        var categoryIds = await _db.AwardCategories.AsNoTracking()
+            .Where(c => c.EventId == DefaultEventId)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+        var votes = await _db.Votes.AsNoTracking()
+            .Where(v => categoryIds.Contains(v.CategoryId))
+            .OrderByDescending(v => v.UpdatedAtUtc)
+            .ToListAsync(ct);
         return new
         {
             total = votes.Count,
@@ -873,10 +901,10 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<NomineeDto>>> AdminGetAllNominees([FromQuery] string? status, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var q = _db.Nominees.AsNoTracking();
+        var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId);
         if (!string.IsNullOrWhiteSpace(status))
             q = q.Where(n => n.Status == status);
-        var list = await q.OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
+        var list = await q.Where(n => n.EventId == DefaultEventId).OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
         return list.Select(ToNomineeDto).ToList();
     }
 
@@ -884,7 +912,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<NomineeDto>> Approve([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (n is null) return NotFound();
         if (string.IsNullOrWhiteSpace(n.CategoryId)) return BadRequest("Nominee must have a category before approval.");
         n.Status = "approved";
@@ -896,7 +924,7 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<NomineeDto>> Reject([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
         if (n is null) return NotFound();
         n.Status = "rejected";
         await _db.SaveChangesAsync(ct);
@@ -912,9 +940,11 @@ public partial class CanhoesController : ControllerBase
         state.NominationsVisible = dto.NominationsVisible;
         state.ResultsVisible = dto.ResultsVisible;
         await _db.SaveChangesAsync(ct);
+        EventContextBootstrap.SyncLegacyPhaseState(_db, state.Phase, state.ResultsVisible);
         return new CanhoesEventStateDto(state.Phase, state.NominationsVisible, state.ResultsVisible);
     }
 
     private static NomineeDto ToNomineeDto(NomineeEntity n) =>
         new(n.Id, n.CategoryId, n.Title, n.ImageUrl, n.Status, new DateTimeOffset(n.CreatedAtUtc, TimeSpan.Zero));
 }
+

@@ -10,11 +10,12 @@ namespace Canhoes.Api.Startup;
 /// </summary>
 internal static class DbSeeder
 {
-    public static void Seed(CanhoesDbContext db, IWebHostEnvironment env)
+    public static void Seed(CanhoesDbContext db, string? webRootPath = null)
     {
         EnsureCanhoesEventState(db);
         EnsureDefaultAwardCategories(db);
-        EnsureUploadDirectories(env);
+        EventContextBootstrap.EnsureDefaultEventContext(db);
+        EnsureUploadDirectories(webRootPath);
     }
 
     private static void EnsureCanhoesEventState(CanhoesDbContext db)
@@ -43,9 +44,9 @@ internal static class DbSeeder
         db.SaveChanges();
     }
 
-    private static void EnsureUploadDirectories(IWebHostEnvironment env)
+    private static void EnsureUploadDirectories(string? webRootPath)
     {
-        var webRoot = env.WebRootPath ?? "wwwroot";
+        var webRoot = string.IsNullOrWhiteSpace(webRootPath) ? "wwwroot" : webRootPath;
         Directory.CreateDirectory(Path.Combine(webRoot, "uploads", "canhoes"));
         Directory.CreateDirectory(Path.Combine(webRoot, "uploads", "hub"));
     }

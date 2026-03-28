@@ -40,19 +40,99 @@ BEGIN
 END
 
 -- Canhões do Ano - AwardCategories extra fields
-IF COL_LENGTH('dbo.AwardCategories', 'Description') IS NULL
+-- Event context
+IF OBJECT_ID('dbo.Events', 'U') IS NULL
+BEGIN
+  CREATE TABLE Events (
+    Id NVARCHAR(64) NOT NULL PRIMARY KEY,
+    Name NVARCHAR(128) NOT NULL,
+    IsActive BIT NOT NULL DEFAULT(1),
+    CreatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+  );
+  CREATE INDEX IX_Events_IsActive ON Events(IsActive);
+END
+
+IF OBJECT_ID('dbo.EventMembers', 'U') IS NULL
+BEGIN
+  CREATE TABLE EventMembers (
+    Id NVARCHAR(64) NOT NULL PRIMARY KEY,
+    EventId NVARCHAR(64) NOT NULL,
+    UserId UNIQUEIDENTIFIER NOT NULL,
+    Role NVARCHAR(16) NOT NULL,
+    JoinedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+  );
+  CREATE UNIQUE INDEX IX_EventMembers_EventId_UserId ON EventMembers(EventId, UserId);
+END
+
+IF OBJECT_ID('dbo.EventPhases', 'U') IS NULL
+BEGIN
+  CREATE TABLE EventPhases (
+    Id NVARCHAR(64) NOT NULL PRIMARY KEY,
+    EventId NVARCHAR(64) NOT NULL,
+    Type NVARCHAR(32) NOT NULL,
+    StartDateUtc DATETIME2 NOT NULL,
+    EndDateUtc DATETIME2 NOT NULL,
+    IsActive BIT NOT NULL DEFAULT(0)
+  );
+  CREATE UNIQUE INDEX IX_EventPhases_EventId_Type ON EventPhases(EventId, Type);
+  CREATE INDEX IX_EventPhases_EventId_IsActive ON EventPhases(EventId, IsActive);
+END
+
+IF OBJECT_ID('dbo.AwardCategories', 'U') IS NOT NULL AND COL_LENGTH('dbo.AwardCategories', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE AwardCategories ADD EventId NVARCHAR(64) NULL;
+  UPDATE AwardCategories SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE AwardCategories ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+
+IF OBJECT_ID('dbo.AwardCategories', 'U') IS NOT NULL AND COL_LENGTH('dbo.AwardCategories', 'Description') IS NULL
 BEGIN
   ALTER TABLE AwardCategories ADD Description NVARCHAR(1000) NULL;
 END
 
-IF COL_LENGTH('dbo.AwardCategories', 'VoteQuestion') IS NULL
+IF OBJECT_ID('dbo.AwardCategories', 'U') IS NOT NULL AND COL_LENGTH('dbo.AwardCategories', 'VoteQuestion') IS NULL
 BEGIN
   ALTER TABLE AwardCategories ADD VoteQuestion NVARCHAR(256) NULL;
 END
 
-IF COL_LENGTH('dbo.AwardCategories', 'VoteRules') IS NULL
+IF OBJECT_ID('dbo.AwardCategories', 'U') IS NOT NULL AND COL_LENGTH('dbo.AwardCategories', 'VoteRules') IS NULL
 BEGIN
   ALTER TABLE AwardCategories ADD VoteRules NVARCHAR(2000) NULL;
+END
+
+IF OBJECT_ID('dbo.Nominees', 'U') IS NOT NULL AND COL_LENGTH('dbo.Nominees', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE Nominees ADD EventId NVARCHAR(64) NULL;
+  UPDATE Nominees SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE Nominees ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+
+IF OBJECT_ID('dbo.CategoryProposals', 'U') IS NOT NULL AND COL_LENGTH('dbo.CategoryProposals', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE CategoryProposals ADD EventId NVARCHAR(64) NULL;
+  UPDATE CategoryProposals SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE CategoryProposals ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+
+IF OBJECT_ID('dbo.Measures', 'U') IS NOT NULL AND COL_LENGTH('dbo.Measures', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE Measures ADD EventId NVARCHAR(64) NULL;
+  UPDATE Measures SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE Measures ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+
+IF OBJECT_ID('dbo.MeasureProposals', 'U') IS NOT NULL AND COL_LENGTH('dbo.MeasureProposals', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE MeasureProposals ADD EventId NVARCHAR(64) NULL;
+  UPDATE MeasureProposals SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE MeasureProposals ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+
+IF OBJECT_ID('dbo.WishlistItems', 'U') IS NOT NULL AND COL_LENGTH('dbo.WishlistItems', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE WishlistItems ADD EventId NVARCHAR(64) NULL;
+  UPDATE WishlistItems SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE WishlistItems ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
 END
 
 -- Hub / Feed
@@ -83,6 +163,7 @@ IF OBJECT_ID('dbo.HubPosts', 'U') IS NULL
 BEGIN
   CREATE TABLE HubPosts (
     Id NVARCHAR(64) NOT NULL PRIMARY KEY,
+    EventId NVARCHAR(64) NOT NULL,
     AuthorUserId UNIQUEIDENTIFIER NOT NULL,
     Text NVARCHAR(4000) NOT NULL,
     MediaUrl NVARCHAR(1024) NULL,
@@ -91,10 +172,17 @@ BEGIN
     IsPinned BIT NOT NULL DEFAULT(0),
     CreatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
   );
+  CREATE INDEX IX_HubPosts_EventId ON HubPosts(EventId);
   CREATE INDEX IX_HubPosts_CreatedAtUtc ON HubPosts(CreatedAtUtc);
 END
 ELSE
 BEGIN
+  IF COL_LENGTH('HubPosts', 'EventId') IS NULL
+  BEGIN
+    ALTER TABLE HubPosts ADD EventId NVARCHAR(64) NULL;
+    UPDATE dbo.HubPosts SET EventId='canhoes-do-ano' WHERE EventId IS NULL;
+    ALTER TABLE HubPosts ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+  END
   IF COL_LENGTH('HubPosts', 'MediaUrlsJson') IS NULL
     ALTER TABLE HubPosts ADD MediaUrlsJson NVARCHAR(MAX) NOT NULL CONSTRAINT DF_HubPosts_MediaUrlsJson DEFAULT('[]');
   ELSE
@@ -124,6 +212,8 @@ BEGIN
     ALTER TABLE HubPosts ADD IsPinned BIT NOT NULL DEFAULT(0);
   IF COL_LENGTH('HubPosts', 'CreatedAtUtc') IS NULL
     ALTER TABLE HubPosts ADD CreatedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME();
+  IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_HubPosts_EventId' AND object_id = OBJECT_ID('dbo.HubPosts'))
+    CREATE INDEX IX_HubPosts_EventId ON HubPosts(EventId);
 END
 
 IF OBJECT_ID('dbo.HubPostComments', 'U') IS NULL

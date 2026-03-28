@@ -17,6 +17,9 @@ public sealed class AwardCategoryEntity
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
+
+    [Required]
     public string Name { get; set; } = string.Empty;
 
     // Optional admin-defined guidance shown to users.
@@ -41,6 +44,9 @@ public sealed class NomineeEntity
 {
     [Key]
     public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
 
     // Category can be null while pending (admin assigns later).
     public string? CategoryId { get; set; }
@@ -68,6 +74,9 @@ public sealed class CategoryProposalEntity
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
+
+    [Required]
     public string Name { get; set; } = string.Empty;
 
     public string? Description { get; set; }
@@ -89,6 +98,9 @@ public sealed class GalaMeasureEntity
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
+
+    [Required]
     public string Text { get; set; } = string.Empty;
 
     public bool IsActive { get; set; } = true;
@@ -100,6 +112,9 @@ public sealed class MeasureProposalEntity
 {
     [Key]
     public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
 
     [Required]
     public string Text { get; set; } = string.Empty;
@@ -175,6 +190,9 @@ public sealed class WishlistItemEntity
 {
     [Key]
     public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
 
     [Required]
     public Guid UserId { get; set; }

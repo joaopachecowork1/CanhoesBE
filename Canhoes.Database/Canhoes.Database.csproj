@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RunDatabaseSetupAfterPublish>true</RunDatabaseSetupAfterPublish>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Canhoes.API\Canhoes.Api.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="database.settings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="RunDatabaseSetupAfterPublish"
+          AfterTargets="Publish"
+          Condition="'$(RunDatabaseSetupAfterPublish)' == 'true'">
+    <Message Importance="high" Text="Running Canhoes.Database after publish..." />
+    <Exec Command="&quot;$(PublishDir)Canhoes.Database.exe&quot;"
+          Condition="Exists('$(PublishDir)Canhoes.Database.exe')" />
+    <Exec Command="dotnet &quot;$(PublishDir)Canhoes.Database.dll&quot;"
+          Condition="!Exists('$(PublishDir)Canhoes.Database.exe') and Exists('$(PublishDir)Canhoes.Database.dll')" />
+  </Target>
+</Project>

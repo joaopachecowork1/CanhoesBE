@@ -1,6 +1,11 @@
 <Solution>
   <Project Path="Canhoes.Api/Canhoes.Api.csproj" />
   <Project Path="Canhoes.BL/Canhoes.BL.csproj" Id="b51b444b-2774-434f-8245-abdb9d608c66" />
+  <Project Path="Canhoes.Database.Sql/Canhoes.Database.Sql.sqlproj" Id="5e207d0e-0c16-4b7e-97b1-73d61a8d5e5a">
+    <BuildType Project="Debug" />
+    <Build />
+    <Deploy />
+  </Project>
   <Project Path="Canhoes.Domain/Canhoes.Domain.csproj" />
   <Project Path="Canhoes.Infrastructure/Canhoes.Infrastructure.csproj" />
   <Project Path="Canhoes.Tests/Canhoes.Tests.csproj" />

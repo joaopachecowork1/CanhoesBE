@@ -1,0 +1,13 @@
+.git
+.vs
+**/bin
+**/obj
+**/node_modules
+**/artifacts
+**/TestResults
+**/*.user
+**/*.suo
+**/*.db
+**/*.db-shm
+**/*.db-wal
+Canhoes.API/wwwroot/uploads

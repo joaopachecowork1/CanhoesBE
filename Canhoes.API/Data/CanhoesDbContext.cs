@@ -8,6 +8,9 @@ public class CanhoesDbContext : DbContext
     public CanhoesDbContext(DbContextOptions<CanhoesDbContext> options) : base(options) { }
 
     public DbSet<UserEntity> Users => Set<UserEntity>();
+    public DbSet<EventEntity> Events => Set<EventEntity>();
+    public DbSet<EventMemberEntity> EventMembers => Set<EventMemberEntity>();
+    public DbSet<EventPhaseEntity> EventPhases => Set<EventPhaseEntity>();
 
     // Canhões do Ano
     public DbSet<AwardCategoryEntity> AwardCategories => Set<AwardCategoryEntity>();
@@ -47,17 +50,43 @@ public class CanhoesDbContext : DbContext
             .HasIndex(x => x.Email)
             .IsUnique();
 
+        modelBuilder.Entity<EventEntity>()
+            .HasIndex(x => x.IsActive);
+
+        modelBuilder.Entity<EventMemberEntity>()
+            .HasIndex(x => new { x.EventId, x.UserId })
+            .IsUnique();
+
+        modelBuilder.Entity<EventPhaseEntity>()
+            .HasIndex(x => new { x.EventId, x.Type })
+            .IsUnique();
+
+        modelBuilder.Entity<EventPhaseEntity>()
+            .HasIndex(x => new { x.EventId, x.IsActive });
+
         modelBuilder.Entity<AwardCategoryEntity>()
             .HasKey(x => x.Id);
+
+        modelBuilder.Entity<AwardCategoryEntity>()
+            .HasIndex(x => new { x.EventId, x.SortOrder });
 
         modelBuilder.Entity<NomineeEntity>()
             .HasIndex(x => new { x.CategoryId, x.Status });
 
+        modelBuilder.Entity<NomineeEntity>()
+            .HasIndex(x => new { x.EventId, x.Status });
+
         modelBuilder.Entity<CategoryProposalEntity>()
             .HasIndex(x => x.Status);
 
+        modelBuilder.Entity<CategoryProposalEntity>()
+            .HasIndex(x => new { x.EventId, x.Status });
+
         modelBuilder.Entity<MeasureProposalEntity>()
             .HasIndex(x => x.Status);
+
+        modelBuilder.Entity<MeasureProposalEntity>()
+            .HasIndex(x => new { x.EventId, x.Status });
 
         modelBuilder.Entity<VoteEntity>()
             .HasIndex(x => new { x.CategoryId, x.UserId })
@@ -86,12 +115,14 @@ public class CanhoesDbContext : DbContext
         {
             e.HasKey(x => x.Id);
             e.Property(x => x.Id).HasMaxLength(64);
+            e.Property(x => x.EventId).HasMaxLength(64);
             e.Property(x => x.Text).HasMaxLength(4000);
             e.Property(x => x.MediaUrl).HasMaxLength(1024);
             e.Property(x => x.MediaUrlsJson)
                 .HasColumnType("nvarchar(max)")
                 .HasDefaultValue("[]");
 
+            e.HasIndex(x => x.EventId);
             e.HasIndex(x => x.CreatedAtUtc);
             e.HasIndex(x => x.IsPinned);
         });

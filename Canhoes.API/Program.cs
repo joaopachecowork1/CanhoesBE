@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Canhoes.Api;
@@ -10,6 +10,13 @@ using Canhoes.BL.Interfaces;
 using Canhoes.BL.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var publicPort = builder.Configuration["PORT"]
+    ?? builder.Configuration["WEBSITES_PORT"];
+if (int.TryParse(publicPort, out var parsedPort) && parsedPort > 0)
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{parsedPort}");
+}
 
 // Ensure a stable WebRoot so uploads written to "wwwroot" are the same files
 // served by UseStaticFiles(). Without this, WebRootPath can vary by host/
@@ -23,6 +30,7 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<CanhoesDbContext>(opt =>
 {
     var cs = builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? builder.Configuration.GetConnectionString("Default")
         ?? "Data Source=localhost;Initial Catalog=Canhoes;Integrated Security=True;TrustServerCertificate=True;";
     opt.UseSqlServer(cs);
 });
@@ -64,7 +72,7 @@ if (string.IsNullOrWhiteSpace(app.Environment.WebRootPath))
 
 app.UseFrontendCors();
 
-// Global error handling – must be first in the middleware pipeline.
+// Global error handling â€“ must be first in the middleware pipeline.
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
 app.UseSwagger();
@@ -72,7 +80,7 @@ app.UseSwaggerUI();
 
 //app.UseHttpsRedirection();
 
-// Serve uploaded images (for Canhões do Ano)
+// Serve uploaded images (for CanhÃµes do Ano)
 app.UseStaticFiles();
 
 app.UseAuthentication();
@@ -87,21 +95,21 @@ app.UseAuthorization();
 // Map authenticated Google user to local DB user (first user becomes admin)
 app.UseMiddleware<UserContextMiddleware>();
 
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "ok",
+    timestampUtc = DateTime.UtcNow
+}));
+
 app.MapControllers();
 
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<CanhoesDbContext>();
-    db.Database.EnsureCreated();
-
-    // NOTE: EnsureCreated() does NOT evolve an existing schema.
-    // DbSchema applies idempotent DDL patches for new columns / tables.
-    DbSchema.EnsureAsync(db).GetAwaiter().GetResult();
-
-    // Seed minimal "Canhões do Ano" state and default data.
-    var env = scope.ServiceProvider.GetRequiredService<IWebHostEnvironment>();
-    DbSeeder.Seed(db, env);
+    var webRootPath = app.Environment.WebRootPath ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+    DatabaseSetupRunner.InitializeAsync(db, webRootPath).GetAwaiter().GetResult();
 }
 
 app.Run();
+
 

@@ -17,6 +17,10 @@ public sealed class HubPostEntity
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     [Required]
+    [MaxLength(64)]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
+
+    [Required]
     public Guid AuthorUserId { get; set; }
 
     [Required]

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
@@ -14,6 +14,7 @@ namespace Canhoes.Api.Controllers;
 [Authorize]
 public sealed class HubController : ControllerBase
 {
+    private const string DefaultEventId = EventContextDefaults.DefaultEventId;
     private readonly CanhoesDbContext _db;
     private readonly IWebHostEnvironment _env;
 
@@ -40,6 +41,7 @@ public sealed class HubController : ControllerBase
 
         var posts = await _db.HubPosts
             .AsNoTracking()
+            .Where(x => x.EventId == DefaultEventId)
             .OrderByDescending(x => x.IsPinned)
             .ThenByDescending(x => x.CreatedAtUtc)
             .Take(take)
@@ -158,8 +160,8 @@ public sealed class HubController : ControllerBase
                 .ToDictionary(g => g.Key, g => g.Count());
 
             var mine = myReactions.TryGetValue(p.Id, out var mr) ? mr : new List<string>();
-            var likedByMe = mine.Contains("❤️");
-            var likeCount = counts.TryGetValue("❤️", out var lc) ? lc : 0;
+            var likedByMe = mine.Contains("â¤ï¸");
+            var likeCount = counts.TryGetValue("â¤ï¸", out var lc) ? lc : 0;
 
             return new HubPostDto
             {
@@ -221,6 +223,7 @@ public sealed class HubController : ControllerBase
 
         var post = new HubPostEntity
         {
+            EventId = DefaultEventId,
             AuthorUserId = userId,
             Text = req.Text.Trim(),
             MediaUrl = mediaUrls.FirstOrDefault(),
@@ -413,7 +416,7 @@ public sealed class HubController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
         if (comment is null) return NotFound();
 
-        var emoji = string.IsNullOrWhiteSpace(req.Emoji) ? "❤️" : req.Emoji.Trim();
+        var emoji = string.IsNullOrWhiteSpace(req.Emoji) ? "â¤ï¸" : req.Emoji.Trim();
         if (emoji.Length > 16) emoji = emoji.Substring(0, 16);
 
         var existing = await _db.HubPostCommentReactions
@@ -551,7 +554,7 @@ public sealed class HubController : ControllerBase
         var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId, ct);
         if (!postExists) return NotFound();
 
-        const string emoji = "❤️";
+        const string emoji = "â¤ï¸";
         var existing = await _db.HubPostReactions
             .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userId && x.Emoji == emoji, ct);
 
@@ -578,7 +581,7 @@ public sealed class HubController : ControllerBase
     [HttpPost("posts/{postId}/reactions")]
     public async Task<ActionResult<object>> ToggleReaction([FromRoute] string postId, [FromBody] ToggleReactionRequest req, CancellationToken ct = default)
     {
-        var emoji = string.IsNullOrWhiteSpace(req.Emoji) ? "❤️" : req.Emoji.Trim();
+        var emoji = string.IsNullOrWhiteSpace(req.Emoji) ? "â¤ï¸" : req.Emoji.Trim();
         if (emoji.Length > 16) emoji = emoji.Substring(0, 16);
         return await ToggleReactionInternal(postId, emoji, ct);
     }
@@ -675,3 +678,4 @@ public sealed class HubController : ControllerBase
         return Ok();
     }
 }
+
