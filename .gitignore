@@ -1,5 +1,5 @@
 # ==============================
-# Build Folders
+# Build folders
 # ==============================
 bin/
 obj/
@@ -41,7 +41,7 @@ packages/
 *.cache
 
 # ==============================
-# Base de Dados (SQLite)
+# Local databases
 # ==============================
 *.db
 *.db-wal
@@ -50,7 +50,13 @@ packages/
 *.sqlite3
 
 # ==============================
-# Configurações de Ambiente Locais
+# Local environment configuration
 # ==============================
 appsettings.Development.json
 *.env
+
+# ==============================
+# SSDT artifacts
+# ==============================
+*.dbmdl
+*.jfm

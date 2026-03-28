@@ -1,0 +1,141 @@
+# 🌿⚡ CANHÕES BE — MASTER SYSTEM PROMPT
+> Versão 1.0 · Stack: .NET · Design Context: Cyber-Orgânico
+
+---
+
+## 🎯 CONTEXTO DO PROJECTO
+
+**Canhões** é uma plataforma privada para um grupo de amigos — um sistema social de posts anónimos onde os utilizadores submetem "canhões" (mensagens/piadas/revelações), outros votam e aprovam, e existe um ranking gamificado baseado em score. Tem painel de administração e um sistema de categorias e stickers.
+
+**Backend repo:** `https://github.com/joaopachecowork1/CanhoesBE`
+**Frontend repo associado:** `https://github.com/joaopachecowork1/CanhoesFE`
+
+**Stack deste repositório:**
+- Backend: `.NET` (C#) + `ASP.NET Core` + `Entity Framework Core`
+
+---
+
+## 🏗️ ESTRUTURA DO PROJECTO
+
+### Backend
+```
+/Canhoes.API            ← Controllers, middleware, Program.cs
+/Canhoes.BL             ← Use cases e lógica de aplicação
+/Canhoes.Domain         ← Entidades e contratos de domínio
+/Canhoes.Infrastructure ← EF Core, persistência e serviços
+/Canhoes.Database       ← Runner de setup de base de dados
+/Canhoes.Database.Sql   ← Projeto SSDT para Publish Database
+/Canhoes.Tests          ← Testes unitários e integração
+```
+
+---
+
+## ⚙️ PRINCÍPIOS DE CÓDIGO — BACKEND (.NET / C#)
+
+### Simplificação — Regras Absolutas
+
+1. **Sem abstracções prematuras.** Não cries interfaces para classes com uma só implementação, salvo se os testes o exijam.
+2. **Pattern matching moderno (C# 8+).**
+3. **LINQ com parcimónia.** Mais de 4 operações encadeadas? Divide em variáveis intermédias com nomes descritivos.
+4. **`record` para DTOs e Value Objects.**
+5. **Result pattern** em vez de exceptions para erros esperados.
+6. **Elimina código morto imediatamente.**
+7. **Controllers finos.** Só recebem request, delegam para Application, devolvem response. **Nunca** lógica de negócio no controller.
+
+### Nomes de Variáveis e Métodos (.NET)
+
+| Tipo | Convenção | Exemplo |
+|------|-----------|---------|
+| Classes e métodos públicos | PascalCase | `CanhaoService`, `GetApprovedFeed` |
+| Variáveis locais e parâmetros | camelCase | `userId`, `canhaoList` |
+| Campos privados | `_` + camelCase | `_canhaoRepository`, `_logger` |
+| Constantes | PascalCase | `MaxScorePerVote` |
+| Booleans | `is/has/can/should` | `isApproved`, `hasPermission` |
+| Métodos async | sufixo `Async` | `GetActiveFeedAsync`, `ApproveCanhaoAsync` |
+| DTOs request | sufixo `Request` | `CreateCanhaoRequest`, `VoteRequest` |
+| DTOs response | sufixo `Response` | `CanhaoSummaryResponse`, `RankingResponse` |
+
+**Evita nomes genéricos:** `Manager`, `Helper`, `Processor` sem contexto.
+
+### API Design
+
+- RESTful: `GET /api/v1/canhoes`, `POST /api/v1/canhoes`, `PATCH /api/v1/canhoes/{id}/approve`
+- **Versionamento desde o início:** `/api/v1/...`
+- **Erros consistentes** com Problem Details (RFC 7807)
+- **Paginação:** `{ data: [], totalCount, pageNumber, pageSize }`
+- **Validação** na camada Application, nunca no controller
+- Tipos explícitos: `ActionResult<CanhaoResponse>` em vez de `IActionResult`
+
+### Documentação de Código (.NET)
+
+Cada método público na camada Application **deve** ter XML doc:
+
+```csharp
+/// <summary>
+/// Aprova um canhão pendente e calcula o score inicial.
+/// </summary>
+/// <param name="canhaoId">ID do canhão a aprovar.</param>
+/// <param name="adminId">ID do administrador que aprova.</param>
+/// <returns>O canhão aprovado com score calculado.</returns>
+public async Task<CanhaoResponse> ApproveCanhaoAsync(Guid canhaoId, Guid adminId)
+```
+
+---
+
+## 🎨 CONTEXTO DE DESIGN
+
+Mesmo sendo backend-only, qualquer alteração de API, DTOs, seed data ou contratos deve respeitar o contexto do produto:
+
+- visual e conteúdo seguem um universo **cyber-orgânico**
+- categorias, stickers, feed, ranking e admin existem num sistema único
+- mobile-first no frontend implica respostas simples, explícitas e estáveis no backend
+- evitar payloads confusos ou nomes genéricos que compliquem a UI
+
+### Tokens de linguagem do produto
+
+- fundo / mood: orgânico + néon
+- termos recorrentes: `feed`, `ranking`, `sticker`, `proposal`, `wishlist`, `vote`, `event`
+- o backend deve manter estes conceitos coesos e previsíveis
+
+---
+
+## 📋 CHECKLIST DE REVISÃO OBRIGATÓRIA
+
+### 🔴 Crítico
+- [ ] Há lógica duplicada que pode ser extraída?
+- [ ] Há estados ou variáveis não utilizados?
+- [ ] Há nomes sem significado (`x`, `temp`, `data2`)?
+- [ ] Há lógica de negócio no controller?
+- [ ] Há endpoints sem tratamento de erro adequado?
+- [ ] Há DTOs inconsistentes com o domínio?
+
+### 🟡 Importante
+- [ ] Métodos públicos no backend sem XML doc?
+- [ ] Funções com mais de 3 parâmetros quando um request object seria melhor?
+- [ ] LINQ demasiado denso?
+- [ ] Há `async`/`await` desnecessário ou mal aplicado?
+- [ ] Há SQL / schema idempotente a faltar em setup de base de dados?
+
+### 🟢 Melhoria
+- [ ] Comentário explicativo para lógica verdadeiramente não óbvia?
+- [ ] Feature mais moderna de C# disponível?
+- [ ] Nome de método ou DTO que poderia ser mais descritivo?
+- [ ] Algum fluxo devia sair do controller para aplicação?
+
+---
+
+## 🚫 O QUE NUNCA FAZER
+
+- **Não sugerir over-engineering.**
+- **Não adicionar dependências** sem justificação clara e alternativas consideradas.
+- **Não mudar comportamento durante refactoring.**
+- **Não deixar schema/setup não-idempotente** em scripts ou bootstrap de base de dados.
+- **Não criar interfaces** para classes com uma única implementação sem necessidade real.
+
+---
+
+## 🌿⚡ RESUMO DO ESPÍRITO DO PROJECTO
+
+Canhões é um projecto de amigos, feito com amor e com intenção técnica séria. O backend deve ser **simples, previsível, documentado e limpo**, para suportar um frontend forte em mobile e um produto com identidade.
+
+> "Simplifica primeiro. Contratos honestos. Controllers finos. Design consistente."
