@@ -6,6 +6,7 @@
     <Build />
     <Deploy />
   </Project>
+  <Project Path="Canhoes.Database/Canhoes.Database.csproj" />
   <Project Path="Canhoes.Domain/Canhoes.Domain.csproj" />
   <Project Path="Canhoes.Infrastructure/Canhoes.Infrastructure.csproj" />
   <Project Path="Canhoes.Tests/Canhoes.Tests.csproj" />

@@ -20,6 +20,15 @@
     <IncludeCompositeObjects>True</IncludeCompositeObjects>
     <TargetDatabaseSet>True</TargetDatabaseSet>
     <TargetFrameworkProfile />
+    <SqlTasksTargetsPath Condition="'$(SQLDBExtensionsRefPath)' != ''">$(SQLDBExtensionsRefPath)\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and '$(VisualStudioVersion)' != '' and Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and '$(VisualStudioVersion)' != '' and Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v18.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v18.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v18.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v18.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
+    <SqlTasksTargetsPath Condition="'$(SqlTasksTargetsPath)' == '' and Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets</SqlTasksTargetsPath>
   </PropertyGroup>
   <ItemGroup>
     <Folder Include="Scripts\" />
@@ -32,9 +41,8 @@
     <None Include="Scripts\Seed\Seed.DefaultData.sql" />
     <None Include="README.md" />
   </ItemGroup>
-  <Import Condition="'$(SQLDBExtensionsRefPath)' != ''" Project="$(SQLDBExtensionsRefPath)\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
-  <Import Condition="'$(SQLDBExtensionsRefPath)' == '' and Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')" Project="$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
-  <Import Condition="'$(SQLDBExtensionsRefPath)' == '' and Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')" Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v17.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
-  <Import Condition="'$(SQLDBExtensionsRefPath)' == '' and Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')" Project="$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
-  <Import Condition="'$(SQLDBExtensionsRefPath)' == '' and Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')" Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v16.0\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
+  <Import Condition="'$(SqlTasksTargetsPath)' != '' and Exists('$(SqlTasksTargetsPath)')" Project="$(SqlTasksTargetsPath)" />
+  <Target Name="EnsureSqlTargetsImported" BeforeTargets="Build" Condition="'$(SqlTasksTargetsPath)' == '' or !Exists('$(SqlTasksTargetsPath)')">
+    <Error Text="SSDT targets not found. Install SQL Server Data Tools in Visual Studio or set SQLDBExtensionsRefPath to the folder that contains Microsoft.Data.Tools.Schema.SqlTasks.targets." />
+  </Target>
 </Project>
