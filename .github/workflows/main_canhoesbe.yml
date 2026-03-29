@@ -22,6 +22,7 @@ on:
 env:
   PROJECT_PATH: ./Canhoes.API/Canhoes.Api.csproj
   PUBLISH_PATH: ${{ github.workspace }}/published-api
+  PACKAGE_PATH: ${{ github.workspace }}/canhoes-api.zip
 
 jobs:
   build:
@@ -47,11 +48,22 @@ jobs:
       - name: Publish
         run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output "${{ env.PUBLISH_PATH }}"
 
+      - name: Create deployment package
+        shell: pwsh
+        run: |
+          if (Test-Path "${{ env.PACKAGE_PATH }}") {
+            Remove-Item "${{ env.PACKAGE_PATH }}" -Force
+          }
+
+          # Zip deploy is more deterministic for App Service than uploading a
+          # loose folder tree, which helps avoid stale binaries on the server.
+          Compress-Archive -Path "${{ env.PUBLISH_PATH }}\\*" -DestinationPath "${{ env.PACKAGE_PATH }}"
+
       - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
           name: canhoes-api
-          path: ${{ env.PUBLISH_PATH }}
+          path: ${{ env.PACKAGE_PATH }}
 
   deploy:
     runs-on: windows-latest
@@ -65,7 +77,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: canhoes-api
-          path: ${{ env.PUBLISH_PATH }}
+          path: ${{ github.workspace }}
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -80,4 +92,4 @@ jobs:
         with:
           app-name: "CanhoesBE"
           slot-name: "Production"
-          package: ${{ env.PUBLISH_PATH }}
+          package: ${{ env.PACKAGE_PATH }}
