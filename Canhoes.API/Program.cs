@@ -18,10 +18,11 @@ if (int.TryParse(publicPort, out var parsedPort) && parsedPort > 0)
     builder.WebHost.UseUrls($"http://0.0.0.0:{parsedPort}");
 }
 
-// Ensure a stable WebRoot so uploads written to "wwwroot" are the same files
-// served by UseStaticFiles(). Without this, WebRootPath can vary by host/
-// working directory and you'll end up saving files in a folder that's not served.
-builder.WebHost.UseWebRoot("wwwroot");
+// Do not override the web root through builder.WebHost.
+// Azure App Service already boots the app with a resolved web root
+// (for example C:\home\site\wwwroot\). Forcing "wwwroot" here changes the
+// host configuration to C:\home\site\wwwroot\wwwroot\ and crashes startup.
+// We normalize the path only after Build(), and only when the host left it empty.
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -63,12 +64,7 @@ builder.Services.AddFrontendCors(builder.Configuration);
 
 var app = builder.Build();
 
-// Ensure WebRootPath is set (some VS/hosting setups can leave it null),
-// otherwise uploads might be saved under a different folder than StaticFiles serves.
-if (string.IsNullOrWhiteSpace(app.Environment.WebRootPath))
-{
-    app.Environment.WebRootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
-}
+var webRootPath = ResolveWebRootPath(app.Environment);
 
 app.UseFrontendCors();
 
@@ -106,10 +102,23 @@ app.MapControllers();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<CanhoesDbContext>();
-    var webRootPath = app.Environment.WebRootPath ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
     DatabaseSetupRunner.InitializeAsync(db, webRootPath).GetAwaiter().GetResult();
 }
 
 app.Run();
+
+static string ResolveWebRootPath(IWebHostEnvironment environment)
+{
+    // Local dev can leave WebRootPath empty in some launch profiles. In that case
+    // we fall back to a conventional ./wwwroot path without rewriting host config.
+    if (!string.IsNullOrWhiteSpace(environment.WebRootPath))
+    {
+        return environment.WebRootPath;
+    }
+
+    var fallbackWebRoot = Path.Combine(environment.ContentRootPath, "wwwroot");
+    environment.WebRootPath = fallbackWebRoot;
+    return fallbackWebRoot;
+}
 
 
