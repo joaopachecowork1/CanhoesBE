@@ -69,18 +69,9 @@ public sealed class EventsController : ControllerBase
             })
             .ToList();
 
-        var phaseDtos = await _db.EventPhases
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderBy(x => x.StartDateUtc)
-            .Select(x => new EventPhaseDto(
-                x.Id,
-                x.Type,
-                new DateTimeOffset(x.StartDateUtc, TimeSpan.Zero),
-                new DateTimeOffset(x.EndDateUtc, TimeSpan.Zero),
-                x.IsActive
-            ))
-            .ToListAsync(ct);
+        var phaseDtos = (await LoadEventPhasesAsync(eventId, ct))
+            .Select(ToEventPhaseDto)
+            .ToList();
 
         var activePhase = phaseDtos.FirstOrDefault(x => x.IsActive);
 
@@ -102,11 +93,7 @@ public sealed class EventsController : ControllerBase
         var (access, error) = await RequireEventAccessAsync(eventId, ct);
         if (error is not null) return error;
 
-        var phases = await _db.EventPhases
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderBy(x => x.StartDateUtc)
-            .ToListAsync(ct);
+        var phases = await LoadEventPhasesAsync(eventId, ct);
 
         var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
@@ -611,10 +598,7 @@ public sealed class EventsController : ControllerBase
         if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.PhaseType)) return BadRequest("PhaseType is required.");
 
-        var phases = await _db.EventPhases
-            .Where(x => x.EventId == eventId)
-            .OrderBy(x => x.StartDateUtc)
-            .ToListAsync(ct);
+        var phases = await LoadEventPhasesForUpdateAsync(eventId, ct);
 
         var targetPhase = phases.FirstOrDefault(x =>
             x.Type.Equals(request.PhaseType.Trim(), StringComparison.OrdinalIgnoreCase));
@@ -1583,11 +1567,7 @@ public sealed class EventsController : ControllerBase
     private async Task<EventAdminStateDto> BuildAdminStateDtoAsync(string eventId, CancellationToken ct)
     {
         var legacyState = await GetOrCreateLegacyStateAsync(ct);
-        var phases = await _db.EventPhases
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderBy(x => x.StartDateUtc)
-            .ToListAsync(ct);
+        var phases = await LoadEventPhasesAsync(eventId, ct);
 
         var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
@@ -1609,13 +1589,7 @@ public sealed class EventsController : ControllerBase
                 moduleVisibility,
                 isAdmin: false
             ),
-            new EventCountsDto(
-                await _db.EventMembers.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
-                await _db.HubPosts.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
-                await _db.AwardCategories.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
-                await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.Status == "pending", ct),
-                await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId, ct)
-            )
+            await BuildAdminCountsDtoAsync(eventId, ct)
         );
     }
 
@@ -1692,6 +1666,30 @@ public sealed class EventsController : ControllerBase
             .ToListAsync(ct);
 
         return events.Select(ToEventSummaryDto).ToList();
+    }
+
+    private Task<List<EventPhaseEntity>> LoadEventPhasesAsync(string eventId, CancellationToken ct) =>
+        _db.EventPhases
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderBy(x => x.StartDateUtc)
+            .ToListAsync(ct);
+
+    private Task<List<EventPhaseEntity>> LoadEventPhasesForUpdateAsync(string eventId, CancellationToken ct) =>
+        _db.EventPhases
+            .Where(x => x.EventId == eventId)
+            .OrderBy(x => x.StartDateUtc)
+            .ToListAsync(ct);
+
+    private async Task<EventCountsDto> BuildAdminCountsDtoAsync(string eventId, CancellationToken ct)
+    {
+        return new EventCountsDto(
+            await _db.EventMembers.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
+            await _db.HubPosts.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
+            await _db.AwardCategories.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
+            await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.Status == "pending", ct),
+            await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId, ct)
+        );
     }
 
     private async Task<List<AwardCategoryDto>> LoadAdminCategoriesAsync(string eventId, CancellationToken ct)
