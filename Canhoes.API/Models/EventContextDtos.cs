@@ -1,17 +1,26 @@
 namespace Canhoes.Api.Models;
 
+/// <summary>
+/// Minimal event identity used by chrome, lists and overview payloads.
+/// </summary>
 public record EventSummaryDto(
     string Id,
     string Name,
     bool IsActive
 );
 
+/// <summary>
+/// Public event member projection consumed by the frontend.
+/// </summary>
 public record EventUserDto(
     Guid Id,
     string Name,
     string Role
 );
 
+/// <summary>
+/// Single scheduled phase window for the current event cycle.
+/// </summary>
 public record EventPhaseDto(
     string Id,
     string Type,
@@ -20,6 +29,10 @@ public record EventPhaseDto(
     bool IsActive
 );
 
+/// <summary>
+/// Full context payload for event-aware pages that need members plus phase
+/// schedule in the same request.
+/// </summary>
 public record EventContextDto(
     EventSummaryDto Event,
     List<EventUserDto> Users,
@@ -27,6 +40,9 @@ public record EventContextDto(
     EventPhaseDto? ActivePhase
 );
 
+/// <summary>
+/// Member capabilities derived from backend auth and current event rules.
+/// </summary>
 public record EventPermissionsDto(
     bool IsAdmin,
     bool IsMember,
@@ -36,6 +52,9 @@ public record EventPermissionsDto(
     bool CanManage
 );
 
+/// <summary>
+/// High-level counters surfaced in the event home and shell.
+/// </summary>
 public record EventCountsDto(
     int MemberCount,
     int FeedPostCount,

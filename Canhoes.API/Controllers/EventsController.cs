@@ -48,9 +48,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}")]
     public async Task<ActionResult<EventContextDto>> GetEventContext([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var members = await _db.EventMembers
             .AsNoTracking()
@@ -105,9 +104,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/overview")]
     public async Task<ActionResult<EventOverviewDto>> GetEventOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var phases = await _db.EventPhases
             .AsNoTracking()
@@ -193,9 +191,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/voting/overview")]
     public async Task<ActionResult<EventVotingOverviewDto>> GetVotingOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
         var categoryIds = await _db.AwardCategories
@@ -236,9 +233,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/secret-santa/overview")]
     public async Task<ActionResult<EventSecretSantaOverviewDto>> GetSecretSantaOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var latestDraw = await GetLatestSecretSantaDrawAsync(ct);
         if (latestDraw is null)
@@ -297,9 +293,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/feed/posts")]
     public async Task<ActionResult<List<EventFeedPostDto>>> GetPosts([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var posts = await _db.HubPosts
             .AsNoTracking()
@@ -337,9 +332,8 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventPostRequest request,
         CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.Content)) return BadRequest("Content is required.");
 
         var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == access.UserId, ct);
@@ -378,9 +372,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/categories")]
     public async Task<ActionResult<List<EventCategoryDto>>> GetCategories([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var categories = await _db.AwardCategories
             .AsNoTracking()
@@ -397,9 +390,8 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventCategoryRequest request,
         CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanManage) return Forbid();
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.Title)) return BadRequest("Title is required.");
         if (!Enum.TryParse<AwardCategoryKind>(request.Kind, true, out var kind))
             return BadRequest("Invalid kind.");
@@ -427,9 +419,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/voting")]
     public async Task<ActionResult<EventVotingBoardDto>> GetVotingBoard([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
 
@@ -524,9 +515,8 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventVoteRequest request,
         CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
         if (!IsPhaseOpen(votingPhase)) return BadRequest("Voting is closed.");
@@ -625,9 +615,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/proposals")]
     public async Task<ActionResult<List<EventProposalDto>>> GetProposals([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var proposals = await _db.CategoryProposals
             .AsNoTracking()
@@ -644,9 +633,8 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventProposalRequest request,
         CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.Content)) return BadRequest("Content is required.");
 
         var phase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Proposals, ct);
@@ -676,9 +664,8 @@ public sealed class EventsController : ControllerBase
         [FromBody] UpdateEventProposalRequest request,
         CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanManage) return Forbid();
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
 
         var proposal = await _db.CategoryProposals
             .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
@@ -725,9 +712,8 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/wishlist")]
     public async Task<ActionResult<List<EventWishlistItemDto>>> GetWishlist([FromRoute] string eventId, CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
 
         var items = await _db.WishlistItems
             .AsNoTracking()
@@ -751,9 +737,8 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventWishlistItemRequest request,
         CancellationToken ct)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return NotFound();
-        if (!access.CanAccess) return Forbid();
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.Title)) return BadRequest("Title is required.");
 
         var item = new WishlistItemEntity
@@ -778,6 +763,21 @@ public sealed class EventsController : ControllerBase
             item.Url,
             new DateTimeOffset(item.UpdatedAtUtc, TimeSpan.Zero)
         ));
+    }
+
+    /// <summary>
+    /// Resolves event access once and returns the controller result that should
+    /// short-circuit the request when the caller cannot use the target event.
+    /// </summary>
+    private async Task<(EventAccessContext Access, ActionResult? Error)> RequireEventAccessAsync(
+        string eventId,
+        CancellationToken ct,
+        bool requireManage = false)
+    {
+        var access = await GetEventAccessAsync(eventId, ct);
+        if (access is null) return (default!, NotFound());
+        if (requireManage ? !access.CanManage : !access.CanAccess) return (default!, Forbid());
+        return (access, null);
     }
 
     private async Task<EventAccessContext?> GetEventAccessAsync(string eventId, CancellationToken ct)
