@@ -363,23 +363,48 @@ END
         var provider = db.Database.ProviderName ?? string.Empty;
         if (!provider.Contains("SqlServer", StringComparison.OrdinalIgnoreCase)) return;
 
+        // SQL Server compiles an entire batch before executing it. If we add a column
+        // and reference it later in the same batch, older databases can still fail
+        // with "Invalid column name". Run these tiny DDL/DML steps separately instead.
         await db.Database.ExecuteSqlRawAsync(@"
 IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
 AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
 BEGIN
   ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NULL;
-  UPDATE dbo.CanhoesEventState SET ModuleVisibilityJson = '{{}}' WHERE ModuleVisibilityJson IS NULL;
-  ALTER TABLE dbo.CanhoesEventState ALTER COLUMN ModuleVisibilityJson NVARCHAR(MAX) NOT NULL;
+END
+");
 
-  IF NOT EXISTS (
-    SELECT 1
-    FROM sys.default_constraints dc
-    INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
-    INNER JOIN sys.tables t ON t.object_id = c.object_id
-    WHERE t.name = 'CanhoesEventState' AND c.name = 'ModuleVisibilityJson'
-  )
-    ALTER TABLE dbo.CanhoesEventState
-      ADD CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{{}}') FOR ModuleVisibilityJson;
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NOT NULL
+BEGIN
+  UPDATE dbo.CanhoesEventState
+  SET ModuleVisibilityJson = '{{}}'
+  WHERE ModuleVisibilityJson IS NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NOT NULL
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState ALTER COLUMN ModuleVisibilityJson NVARCHAR(MAX) NOT NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NOT NULL
+AND NOT EXISTS (
+  SELECT 1
+  FROM sys.default_constraints dc
+  INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
+  INNER JOIN sys.tables t ON t.object_id = c.object_id
+  WHERE t.name = 'CanhoesEventState' AND c.name = 'ModuleVisibilityJson'
+)
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState
+    ADD CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{{}}') FOR ModuleVisibilityJson;
 END
 ");
     }
