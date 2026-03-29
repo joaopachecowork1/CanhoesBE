@@ -132,7 +132,7 @@ public sealed class EventsController : ControllerBase
             .Select(x => x.Id)
             .ToListAsync(ct);
 
-        var latestDraw = await GetLatestSecretSantaDrawAsync(ct);
+        var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
         var hasAssignment = latestDraw is not null && await _db.SecretSantaAssignments
             .AsNoTracking()
             .AnyAsync(x => x.DrawId == latestDraw.Id && x.GiverUserId == access.UserId, ct);
@@ -239,7 +239,7 @@ public sealed class EventsController : ControllerBase
         var (access, error) = await RequireEventAccessAsync(eventId, ct);
         if (error is not null) return error;
 
-        var latestDraw = await GetLatestSecretSantaDrawAsync(ct);
+        var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
         if (latestDraw is null)
         {
             return Ok(new EventSecretSantaOverviewDto(
@@ -656,6 +656,114 @@ public sealed class EventsController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new EventSummaryDto(access.Event.Id, access.Event.Name, true));
+    }
+
+    /// <summary>
+    /// Returns the current Secret Santa draw state for the admin panel.
+    /// </summary>
+    [HttpGet("{eventId}/admin/secret-santa/state")]
+    public async Task<ActionResult<EventAdminSecretSantaStateDto>> AdminGetSecretSantaState(
+        [FromRoute] string eventId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        return Ok(await BuildAdminSecretSantaStateDtoAsync(eventId, null, ct));
+    }
+
+    /// <summary>
+    /// Creates or reruns the Secret Santa draw for the selected event using
+    /// the event member list as the participant source.
+    /// </summary>
+    [HttpPost("{eventId}/admin/secret-santa/draw")]
+    public async Task<ActionResult<EventAdminSecretSantaStateDto>> AdminDrawSecretSanta(
+        [FromRoute] string eventId,
+        [FromBody] CreateEventSecretSantaDrawRequest? request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var participants = await LoadEventSecretSantaParticipantsAsync(eventId, ct);
+        if (participants.Count < 2)
+        {
+            return BadRequest("Need at least 2 members to draw.");
+        }
+
+        var eventCode = NormalizeSecretSantaEventCode(eventId, request?.EventCode);
+
+        var existingDraws = await _db.SecretSantaDraws
+            .Where(x => x.EventCode == eventCode)
+            .ToListAsync(ct);
+
+        if (existingDraws.Count > 0)
+        {
+            foreach (var existingDraw in existingDraws)
+            {
+                var existingAssignments = _db.SecretSantaAssignments.Where(x => x.DrawId == existingDraw.Id);
+                _db.SecretSantaAssignments.RemoveRange(existingAssignments);
+            }
+
+            _db.SecretSantaDraws.RemoveRange(existingDraws);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        var rng = new Random();
+        const int maxAttempts = 100;
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var shuffledParticipants = participants.ToList();
+            for (var index = shuffledParticipants.Count - 1; index > 0; index--)
+            {
+                var swapIndex = rng.Next(index + 1);
+                (shuffledParticipants[index], shuffledParticipants[swapIndex]) =
+                    (shuffledParticipants[swapIndex], shuffledParticipants[index]);
+            }
+
+            var isValid = true;
+            for (var index = 0; index < participants.Count; index++)
+            {
+                if (participants[index].Id == shuffledParticipants[index].Id)
+                {
+                    isValid = false;
+                    break;
+                }
+            }
+
+            if (!isValid)
+            {
+                continue;
+            }
+
+            var draw = new SecretSantaDrawEntity
+            {
+                Id = Guid.NewGuid().ToString(),
+                EventCode = eventCode,
+                CreatedAtUtc = DateTime.UtcNow,
+                CreatedByUserId = HttpContext.GetUserId(),
+                IsLocked = true,
+            };
+
+            _db.SecretSantaDraws.Add(draw);
+
+            for (var index = 0; index < participants.Count; index++)
+            {
+                _db.SecretSantaAssignments.Add(new SecretSantaAssignmentEntity
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    DrawId = draw.Id,
+                    GiverUserId = participants[index].Id,
+                    ReceiverUserId = shuffledParticipants[index].Id,
+                });
+            }
+
+            await _db.SaveChangesAsync(ct);
+            return Ok(await BuildAdminSecretSantaStateDtoAsync(eventId, eventCode, ct));
+        }
+
+        return BadRequest($"Could not create a valid draw after {maxAttempts} attempts. Please try again.");
     }
 
     /// <summary>
@@ -1387,6 +1495,8 @@ public sealed class EventsController : ControllerBase
             x.EventId,
             x.Title,
             x.Url,
+            x.Notes,
+            x.ImageUrl,
             new DateTimeOffset(x.UpdatedAtUtc, TimeSpan.Zero)
         )).ToList());
     }
@@ -1408,6 +1518,7 @@ public sealed class EventsController : ControllerBase
             UserId = access.UserId,
             Title = request.Title.Trim(),
             Url = string.IsNullOrWhiteSpace(request.Link) ? null : request.Link.Trim(),
+            Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
         };
@@ -1421,6 +1532,8 @@ public sealed class EventsController : ControllerBase
             item.EventId,
             item.Title,
             item.Url,
+            item.Notes,
+            item.ImageUrl,
             new DateTimeOffset(item.UpdatedAtUtc, TimeSpan.Zero)
         ));
     }
@@ -1498,12 +1611,12 @@ public sealed class EventsController : ControllerBase
             .OrderByDescending(x => x.StartDateUtc)
             .FirstOrDefaultAsync(ct);
 
-    private Task<SecretSantaDrawEntity?> GetLatestSecretSantaDrawAsync(CancellationToken ct)
+    private Task<SecretSantaDrawEntity?> GetLatestSecretSantaDrawAsync(string eventId, CancellationToken ct)
     {
-        // TODO: Secret Santa draws are still keyed by legacy EventCode instead of EventId.
-        // Until that model is consolidated, use the latest draw as the active event draw.
+        var eventCodes = GetSecretSantaEventCodeCandidates(eventId);
         return _db.SecretSantaDraws
             .AsNoTracking()
+            .Where(x => eventCodes.Contains(x.EventCode))
             .OrderByDescending(x => x.CreatedAtUtc)
             .FirstOrDefaultAsync(ct);
     }
@@ -1544,6 +1657,7 @@ public sealed class EventsController : ControllerBase
         var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
         var moduleVisibility = ParseModuleVisibility(legacyState);
+        var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
 
         return new EventAdminStateDto(
             eventId,
@@ -1554,7 +1668,7 @@ public sealed class EventsController : ControllerBase
             moduleVisibility,
             BuildModuleVisibility(
                 activePhaseEntity,
-                await _db.SecretSantaDraws.AsNoTracking().AnyAsync(ct),
+                latestDraw is not null,
                 false,
                 legacyState,
                 moduleVisibility,
@@ -1568,6 +1682,82 @@ public sealed class EventsController : ControllerBase
                 await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId, ct)
             )
         );
+    }
+
+    private async Task<EventAdminSecretSantaStateDto> BuildAdminSecretSantaStateDtoAsync(
+        string eventId,
+        string? requestedEventCode,
+        CancellationToken ct)
+    {
+        var draw = string.IsNullOrWhiteSpace(requestedEventCode)
+            ? await GetLatestSecretSantaDrawAsync(eventId, ct)
+            : await _db.SecretSantaDraws
+                .AsNoTracking()
+                .Where(x => x.EventCode == requestedEventCode)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .FirstOrDefaultAsync(ct);
+
+        var eventCode = draw?.EventCode ?? NormalizeSecretSantaEventCode(eventId, requestedEventCode);
+        var memberCount = await _db.EventMembers.AsNoTracking().CountAsync(x => x.EventId == eventId, ct);
+        var assignmentCount = draw is null
+            ? 0
+            : await _db.SecretSantaAssignments.AsNoTracking().CountAsync(x => x.DrawId == draw.Id, ct);
+
+        return new EventAdminSecretSantaStateDto(
+            eventId,
+            eventCode,
+            draw is not null,
+            draw?.Id,
+            draw is null ? null : new DateTimeOffset(draw.CreatedAtUtc, TimeSpan.Zero),
+            draw?.IsLocked ?? false,
+            memberCount,
+            assignmentCount
+        );
+    }
+
+    private async Task<List<UserEntity>> LoadEventSecretSantaParticipantsAsync(string eventId, CancellationToken ct)
+    {
+        var participantIds = await _db.EventMembers
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .Select(x => x.UserId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        return await _db.Users
+            .AsNoTracking()
+            .Where(x => participantIds.Contains(x.Id))
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+    }
+
+    private static string NormalizeSecretSantaEventCode(string eventId, string? requestedEventCode)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedEventCode))
+        {
+            return requestedEventCode.Trim();
+        }
+
+        return eventId;
+    }
+
+    private static List<string> GetSecretSantaEventCodeCandidates(string eventId)
+    {
+        var codes = new List<string> { eventId };
+
+        // Older draws were created through the legacy controller using a yearly
+        // code like "canhoes2026". Keep that fallback for the default event
+        // until Secret Santa is fully migrated to event-scoped storage.
+        if (string.Equals(eventId, EventContextDefaults.DefaultEventId, StringComparison.OrdinalIgnoreCase))
+        {
+            var legacyYearCode = $"canhoes{DateTime.UtcNow.Year}";
+            if (!codes.Contains(legacyYearCode, StringComparer.OrdinalIgnoreCase))
+            {
+                codes.Add(legacyYearCode);
+            }
+        }
+
+        return codes;
     }
 
     private static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? legacyState)

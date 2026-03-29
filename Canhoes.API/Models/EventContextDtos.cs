@@ -174,6 +174,27 @@ public record EventSecretSantaOverviewDto(
     int MyWishlistItemCount
 );
 
+/// <summary>
+/// Admin-facing snapshot of the current draw state for a specific event.
+/// </summary>
+public record EventAdminSecretSantaStateDto(
+    string EventId,
+    string EventCode,
+    bool HasDraw,
+    string? DrawId,
+    DateTimeOffset? CreatedAtUtc,
+    bool IsLocked,
+    int MemberCount,
+    int AssignmentCount
+);
+
+/// <summary>
+/// Allows the admin panel to trigger or rerun the Secret Santa draw for the
+/// current event. EventCode stays optional while the legacy draw model still
+/// exists alongside the event-scoped API.
+/// </summary>
+public record CreateEventSecretSantaDrawRequest(string? EventCode);
+
 public record EventFeedPostDto(
     string Id,
     string EventId,
@@ -273,10 +294,13 @@ public record EventWishlistItemDto(
     string EventId,
     string Title,
     string? Link,
+    string? Notes,
+    string? ImageUrl,
     DateTimeOffset UpdatedAt
 );
 
 public record CreateEventWishlistItemRequest(
     string Title,
-    string? Link
+    string? Link,
+    string? Notes
 );
