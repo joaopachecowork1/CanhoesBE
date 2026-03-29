@@ -1626,34 +1626,27 @@ public sealed class EventsController : ControllerBase
 
     private async Task<EventAdminBootstrapDto> BuildAdminBootstrapDtoAsync(string eventId, CancellationToken ct)
     {
-        var eventsTask = LoadEventSummariesAsync(ct);
-        var stateTask = BuildAdminStateDtoAsync(eventId, ct);
-        var categoriesTask = LoadAdminCategoriesAsync(eventId, ct);
-        var nomineesTask = LoadAdminNomineeDtosAsync(eventId, null, ct);
-        var proposalsTask = BuildAdminProposalsHistoryDtoAsync(eventId, ct);
-        var votesTask = BuildAdminVotesDtoAsync(eventId, ct);
-        var membersTask = LoadAdminMembersAsync(eventId, ct);
-        var secretSantaTask = BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
-
-        await Task.WhenAll(
-            eventsTask,
-            stateTask,
-            categoriesTask,
-            nomineesTask,
-            proposalsTask,
-            votesTask,
-            membersTask,
-            secretSantaTask);
+        // The admin bootstrap is a single request, but all reads still share the
+        // same scoped DbContext. Keep them sequential here so EF Core does not
+        // attempt concurrent operations on the same context instance.
+        var events = await LoadEventSummariesAsync(ct);
+        var state = await BuildAdminStateDtoAsync(eventId, ct);
+        var categories = await LoadAdminCategoriesAsync(eventId, ct);
+        var nominees = await LoadAdminNomineeDtosAsync(eventId, null, ct);
+        var proposals = await BuildAdminProposalsHistoryDtoAsync(eventId, ct);
+        var votes = await BuildAdminVotesDtoAsync(eventId, ct);
+        var members = await LoadAdminMembersAsync(eventId, ct);
+        var secretSanta = await BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
 
         return new EventAdminBootstrapDto(
-            await eventsTask,
-            await stateTask,
-            await categoriesTask,
-            await nomineesTask,
-            await proposalsTask,
-            await votesTask,
-            await membersTask,
-            await secretSantaTask
+            events,
+            state,
+            categories,
+            nominees,
+            proposals,
+            votes,
+            members,
+            secretSanta
         );
     }
 
