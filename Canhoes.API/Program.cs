@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.Logging;
 using Canhoes.Api;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
@@ -33,7 +34,15 @@ builder.Services.AddDbContext<CanhoesDbContext>(opt =>
     var cs = builder.Configuration.GetConnectionString("DefaultConnection")
         ?? builder.Configuration.GetConnectionString("Default")
         ?? "Data Source=localhost;Initial Catalog=Canhoes;Integrated Security=True;TrustServerCertificate=True;";
-    opt.UseSqlServer(cs);
+    opt.UseSqlServer(cs, sql =>
+    {
+        // Azure SQL can reject connections briefly during failover or warm-up.
+        // Let EF retry those transient faults before the app gives up on startup.
+        sql.EnableRetryOnFailure(
+            maxRetryCount: 6,
+            maxRetryDelay: TimeSpan.FromSeconds(15),
+            errorNumbersToAdd: null);
+    });
 });
 
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -102,7 +111,11 @@ app.MapControllers();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<CanhoesDbContext>();
-    DatabaseSetupRunner.InitializeAsync(db, webRootPath).GetAwaiter().GetResult();
+    var logger = scope.ServiceProvider
+        .GetRequiredService<ILoggerFactory>()
+        .CreateLogger("DatabaseSetup");
+
+    DatabaseSetupRunner.InitializeAsync(db, logger, webRootPath).GetAwaiter().GetResult();
 }
 
 app.Run();
