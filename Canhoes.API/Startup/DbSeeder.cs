@@ -26,7 +26,7 @@ internal static class DbSeeder
         db.Database.ExecuteSqlRaw(@"
             SET IDENTITY_INSERT CanhoesEventState ON;
             INSERT INTO CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
-            VALUES (1, 'nominations', 1, 0, '{}');
+            VALUES (1, 'nominations', 1, 0, '{{}}');
             SET IDENTITY_INSERT CanhoesEventState OFF;
         ");
     }

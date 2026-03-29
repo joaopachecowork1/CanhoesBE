@@ -140,7 +140,7 @@ END
 IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
 BEGIN
   ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NOT NULL
-    CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}');
+    CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{{}}');
 END
 
 -- Hub / Feed
@@ -368,7 +368,7 @@ IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
 AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
 BEGIN
   ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NULL;
-  UPDATE dbo.CanhoesEventState SET ModuleVisibilityJson = '{}' WHERE ModuleVisibilityJson IS NULL;
+  UPDATE dbo.CanhoesEventState SET ModuleVisibilityJson = '{{}}' WHERE ModuleVisibilityJson IS NULL;
   ALTER TABLE dbo.CanhoesEventState ALTER COLUMN ModuleVisibilityJson NVARCHAR(MAX) NOT NULL;
 
   IF NOT EXISTS (
@@ -379,7 +379,7 @@ BEGIN
     WHERE t.name = 'CanhoesEventState' AND c.name = 'ModuleVisibilityJson'
   )
     ALTER TABLE dbo.CanhoesEventState
-      ADD CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}') FOR ModuleVisibilityJson;
+      ADD CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{{}}') FOR ModuleVisibilityJson;
 END
 ");
     }
