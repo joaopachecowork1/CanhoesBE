@@ -1,0 +1,80 @@
+name: Build and deploy ASP.NET Core app to Azure Web App - Canhoes
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "Canhoes.API/**"
+      - "Canhoes.BL/**"
+      - "Canhoes.Database/**"
+      - "Canhoes.Database.Sql/**"
+      - "Canhoes.Domain/**"
+      - "Canhoes.Infrastructure/**"
+      - "Canhoes.Tests/**"
+      - "Canhoes.slnx"
+      - ".github/workflows/main_canhoes.yml"
+
+env:
+  PROJECT_PATH: ./Canhoes.API/Canhoes.Api.csproj
+  PUBLISH_PATH: ${{ github.workspace }}/published-api
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT_PATH }}
+
+      - name: Build
+        run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output "${{ env.PUBLISH_PATH }}"
+
+      - name: Upload artifact for deployment
+        uses: actions/upload-artifact@v4
+        with:
+          name: canhoes-api
+          path: ${{ env.PUBLISH_PATH }}
+
+  deploy:
+    runs-on: windows-latest
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: canhoes-api
+          path: ${{ env.PUBLISH_PATH }}
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_DF5869021BBD457984532618EEFFAD34 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_E3BAD60B2F604960AA048AF0BF42846D }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_2FD76215A8E640A6A5D305B108D8F4C2 }}
+
+      - name: Deploy to Azure Web App
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: "Canhoes"
+          slot-name: "Production"
+          package: ${{ env.PUBLISH_PATH }}
