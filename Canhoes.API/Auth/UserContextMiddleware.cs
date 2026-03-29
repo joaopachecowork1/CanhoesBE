@@ -1,22 +1,13 @@
-using System.Linq;
-using System;
-﻿using System.Security.Claims;
-using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Configuration;
+using Microsoft.EntityFrameworkCore;
 
 namespace Canhoes.Api.Auth;
 
 /// <summary>
-/// Maps the authenticated Google user (JWT id_token) to a local UserEntity in the database.
-///
-/// Rules (simple by design):
-/// - If this is the first user ever created in the DB, they become admin.
-/// - Admin status is stored in the DB (UserEntity.IsAdmin).
-///
-/// Controllers can use HttpContextUserExtensions.GetUserId()/IsAdmin().
+/// Maps the authenticated Google user to the local user record used by the
+/// application. The database is the source of truth for `IsAdmin`.
 /// </summary>
 public sealed class UserContextMiddleware
 {
@@ -24,103 +15,140 @@ public sealed class UserContextMiddleware
     private readonly ILogger<UserContextMiddleware> _logger;
     private readonly IConfiguration _config;
 
-    public UserContextMiddleware(RequestDelegate next, ILogger<UserContextMiddleware> logger, IConfiguration config)
+    public UserContextMiddleware(
+        RequestDelegate next,
+        ILogger<UserContextMiddleware> logger,
+        IConfiguration config)
     {
         _next = next;
         _logger = logger;
         _config = config;
     }
 
-    public async Task Invoke(HttpContext ctx, CanhoesDbContext _db)
+    public async Task Invoke(HttpContext context, CanhoesDbContext db)
     {
-        if (ctx.User?.Identity?.IsAuthenticated == true)
+        if (context.User?.Identity?.IsAuthenticated != true)
         {
-            var sub = ctx.User.FindFirst("sub")?.Value
-                      ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            var email = ctx.User.FindFirst("email")?.Value
-                        ?? ctx.User.FindFirst(ClaimTypes.Email)?.Value;
-            var name = ctx.User.FindFirst("name")?.Value
-                       ?? ctx.User.FindFirst(ClaimTypes.Name)?.Value
-                       ?? email;
-
-            if (!string.IsNullOrWhiteSpace(sub) && !string.IsNullOrWhiteSpace(email))
-            {
-                // Procura por ExternalId (mais correto) ou Email como fallback
-                var user = await _db.Users.FirstOrDefaultAsync(u => u.ExternalId == sub || u.Email == email);
-
-                if (user == null)
-                {
-                    user = new UserEntity
-                    {
-                        Id = Guid.NewGuid(),                    // ← ADICIONA ISTO
-                        Email = email,
-                        DisplayName = name,
-                        ExternalId = sub,
-                        IsAdmin = !await _db.Users.AnyAsync(), // Primeiro user é admin
-                        CreatedAt = DateTime.UtcNow             // ← ADICIONA ISTO
-                    };
-                    _db.Users.Add(user);
-                    await _db.SaveChangesAsync();
-                }
-
-                ctx.Items["UserId"] = user.Id;
-                ctx.Items["IsAdmin"] = user.IsAdmin;
-                
-                _logger.LogInformation("User found: Email={Email}, IsAdmin={IsAdmin}, ExternalId={ExternalId}", user.Email, user.IsAdmin, user.ExternalId);
-                
-                // Apply optional admin allowlist (email) from config: Auth:AdminEmails: [ "email1", ... ]
-                try
-                {
-                    var adminEmails = _config.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
-                    _logger.LogInformation("AdminEmails configured: {AdminEmailsCount} emails", adminEmails.Length);
-                    
-                    if (adminEmails.Length > 0 && adminEmails.Any(e => string.Equals(e.Trim(), user.Email, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        _logger.LogInformation("User {Email} is in AdminEmails list", user.Email);
-                        
-                        if (!user.IsAdmin)
-                        {
-                            user.IsAdmin = true;
-                            await _db.SaveChangesAsync();
-                            _logger.LogInformation("User {Email} promoted to admin via allowlist.", user.Email);
-                        }
-                        else
-                        {
-                            _logger.LogInformation("User {Email} is already admin", user.Email);
-                        }
-                        
-                        ctx.Items["IsAdmin"] = true;
-                    }
-                    else
-                    {
-                        _logger.LogWarning("User {Email} is NOT in AdminEmails list", user.Email);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to apply AdminEmails allowlist.");
-                }
-
-                _logger.LogDebug("Mapped token -> user: sub={Sub} email={Email} userId={UserId} isAdmin={IsAdmin}", sub, email, user.Id, user.IsAdmin);
-    
-            }
+            await _next(context);
+            return;
         }
 
-        await _next(ctx);
+        var profile = ExtractProfile(context.User);
+        if (profile is null)
+        {
+            await _next(context);
+            return;
+        }
+
+        var ct = context.RequestAborted;
+        var user = await db.Users.FirstOrDefaultAsync(
+            x => x.ExternalId == profile.ExternalId || x.Email == profile.Email,
+            ct);
+
+        if (user is null)
+        {
+            user = await CreateUserAsync(profile, db, ct);
+        }
+
+        await PromoteAllowlistedAdminAsync(user, db, ct);
+
+        context.Items["UserId"] = user.Id;
+        context.Items["IsAdmin"] = user.IsAdmin;
+
+        await _next(context);
     }
+
+    private static AuthenticatedUserProfile? ExtractProfile(ClaimsPrincipal principal)
+    {
+        var externalId = principal.FindFirst("sub")?.Value
+            ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var email = principal.FindFirst("email")?.Value
+            ?? principal.FindFirst(ClaimTypes.Email)?.Value;
+        var displayName = principal.FindFirst("name")?.Value
+            ?? principal.FindFirst(ClaimTypes.Name)?.Value
+            ?? email;
+
+        if (string.IsNullOrWhiteSpace(externalId) || string.IsNullOrWhiteSpace(email))
+        {
+            return null;
+        }
+
+        return new AuthenticatedUserProfile(externalId, email, displayName ?? email);
+    }
+
+    private async Task<UserEntity> CreateUserAsync(
+        AuthenticatedUserProfile profile,
+        CanhoesDbContext db,
+        CancellationToken ct)
+    {
+        var user = new UserEntity
+        {
+            Id = Guid.NewGuid(),
+            Email = profile.Email,
+            DisplayName = profile.DisplayName,
+            ExternalId = profile.ExternalId,
+            IsAdmin = !await db.Users.AnyAsync(ct),
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        db.Users.Add(user);
+        await db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Created local user {Email} (admin: {IsAdmin})",
+            user.Email,
+            user.IsAdmin);
+
+        return user;
+    }
+
+    private async Task PromoteAllowlistedAdminAsync(
+        UserEntity user,
+        CanhoesDbContext db,
+        CancellationToken ct)
+    {
+        var adminEmails = _config.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
+        if (adminEmails.Length == 0 || user.IsAdmin)
+        {
+            return;
+        }
+
+        var isAllowlisted = adminEmails.Any(email =>
+            string.Equals(email.Trim(), user.Email, StringComparison.OrdinalIgnoreCase));
+
+        if (!isAllowlisted)
+        {
+            return;
+        }
+
+        user.IsAdmin = true;
+        await db.SaveChangesAsync(ct);
+
+        _logger.LogInformation("Promoted {Email} to admin via configured allowlist.", user.Email);
+    }
+
+    private sealed record AuthenticatedUserProfile(string ExternalId, string Email, string DisplayName);
 }
 
 public static class HttpContextUserExtensions
 {
     public static Guid GetUserId(this HttpContext ctx)
     {
-        if (ctx.Items.TryGetValue("UserId", out var v) && v is Guid g) return g;
+        if (ctx.Items.TryGetValue("UserId", out var value) && value is Guid userId)
+        {
+            return userId;
+        }
+
         return Guid.Empty;
     }
 
     public static bool IsAdmin(this HttpContext ctx)
     {
-        if (ctx.Items.TryGetValue("IsAdmin", out var v) && v is bool b) return b;
+        if (ctx.Items.TryGetValue("IsAdmin", out var value) && value is bool isAdmin)
+        {
+            return isAdmin;
+        }
+
         return false;
     }
 }

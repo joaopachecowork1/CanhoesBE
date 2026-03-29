@@ -19,6 +19,11 @@ public sealed class UsersController : ControllerBase
         _db = db;
     }
 
+    /// <summary>
+    /// Returns the authenticated user profile as resolved by the backend.
+    /// Frontend auth bootstrap uses this endpoint as the source of truth for
+    /// role information such as <c>isAdmin</c>.
+    /// </summary>
     [HttpGet("me")]
     public async Task<ActionResult<MeDto>> Me(CancellationToken ct)
     {

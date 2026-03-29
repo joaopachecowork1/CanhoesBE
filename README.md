@@ -1,34 +1,40 @@
-# Canhoes Backend (DEV skeleton)
+# CanhoesBE
 
-This is a minimal ASP.NET Core Web API backend to support the frontend right now.
+Backend for **Canhoes do Ano**.
 
-## Run (local)
-From `backend/Canhoes.Api`:
+## Runtime entry point
+
+The real application runtime is:
+
+- `Canhoes.API/Program.cs`
+
+The repository root also contains older scaffold files and experiments. They
+are not the primary runtime used by the frontend.
+
+## Main API areas
+
+- `v1/events/*` for event-scoped overview, admin, voting, wishlist and feed
+- `canhoes/*` as the legacy compatibility layer still used by some frontend modules
+- `hub/*` for the social feed
+- `uploads/*` for media serving and fallback resolution
+- `me` and `users` for authenticated user context
+
+## Auth
+
+- Frontend sends `Authorization: Bearer <Google id_token>`
+- ASP.NET validates the Google token with JwtBearer
+- `UserContextMiddleware` maps the Google identity to a local `UserEntity`
+- The database is the source of truth for `IsAdmin`
+- `GET /api/me` returns the authenticated backend profile used by the frontend
+
+## Startup caveat
+
+`Canhoes.API` still performs legacy schema/bootstrap work during startup. That
+area is operationally sensitive and should be changed carefully.
+
+## Commands
 
 ```bash
-dotnet restore
-dotnet run
+dotnet build Canhoes.API/Canhoes.Api.csproj
+dotnet run --project Canhoes.API/Canhoes.Api.csproj
 ```
-
-By default:
-- Swagger: `https://localhost:5001/swagger` (or `http://localhost:5000/swagger`)
-- SQLite file: `canhoes.db` in the API folder
-
-## Auth (DEV ONLY)
-The API uses a very simple middleware (`MockAuthMiddleware`) that sets a user id.
-- If `Authorization: Bearer <token>` exists, it assumes the mock user.
-- You can also pass `X-User-Id: <guid>` to simulate different users.
-
-TODO: replace with real JWT auth.
-
-## Endpoints used by the frontend
-- `POST /api/sessions/start`
-- `POST /api/sessions/{id}/stop`
-- `GET /api/sessions`
-- `GET /api/sessions/active`
-- `GET /api/backlog`
-
-## XP rules
-Server is the source of truth.
-Currently: `1 XP per second` (placeholder).
-TODO: decide and update `Models/XpCalculator.cs`.
