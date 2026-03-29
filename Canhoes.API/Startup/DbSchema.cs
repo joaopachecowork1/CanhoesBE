@@ -135,6 +135,12 @@ BEGIN
   ALTER TABLE WishlistItems ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
 END
 
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NOT NULL
+    CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}');
+END
+
 -- Hub / Feed
 -- If an older dev DB exists with incompatible types (e.g. UNIQUEIDENTIFIER Id),
 -- drop Hub tables so the current schema can be recreated consistently.

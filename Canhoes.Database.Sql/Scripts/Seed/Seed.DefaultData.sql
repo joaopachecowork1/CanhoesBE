@@ -3,8 +3,8 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM dbo.CanhoesEventState WHERE Id = 1)
 BEGIN
-    INSERT INTO dbo.CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible)
-    VALUES (1, 'nominations', 1, 0);
+    INSERT INTO dbo.CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
+    VALUES (1, 'nominations', 1, 0, '{}');
 END
 GO
 

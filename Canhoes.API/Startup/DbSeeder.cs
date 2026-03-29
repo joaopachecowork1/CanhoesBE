@@ -25,8 +25,8 @@ internal static class DbSeeder
         // EnsureCreated() may not handle IDENTITY_INSERT automatically.
         db.Database.ExecuteSqlRaw(@"
             SET IDENTITY_INSERT CanhoesEventState ON;
-            INSERT INTO CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible)
-            VALUES (1, 'nominations', 1, 0);
+            INSERT INTO CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
+            VALUES (1, 'nominations', 1, 0, '{}');
             SET IDENTITY_INSERT CanhoesEventState OFF;
         ");
     }

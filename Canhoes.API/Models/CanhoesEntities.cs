@@ -179,6 +179,13 @@ public sealed class CanhoesEventStateEntity
 
     public bool NominationsVisible { get; set; } = true;
     public bool ResultsVisible { get; set; } = false;
+
+    /// <summary>
+    /// Per-module visibility flags for regular members. Admins still keep
+    /// access to every module so they can manage the full event.
+    /// </summary>
+    [Required]
+    public string ModuleVisibilityJson { get; set; } = "{}";
 }
 
 

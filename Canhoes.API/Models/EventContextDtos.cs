@@ -101,6 +101,53 @@ public record EventOverviewDto(
 );
 
 /// <summary>
+/// Admin-configurable visibility flags for regular members. These toggles are
+/// merged with the phase rules so admins can hide modules without hardcoding
+/// that logic in the frontend.
+/// </summary>
+public record EventAdminModuleVisibilityDto(
+    bool Feed,
+    bool SecretSanta,
+    bool Wishlist,
+    bool Categories,
+    bool Voting,
+    bool Gala,
+    bool Stickers,
+    bool Measures,
+    bool Nominees
+);
+
+/// <summary>
+/// Full control-center payload for admins. It includes the active phase, all
+/// available phases, legacy visibility toggles and the member-facing module
+/// visibility resulting from the current configuration.
+/// </summary>
+public record EventAdminStateDto(
+    string EventId,
+    EventPhaseDto? ActivePhase,
+    List<EventPhaseDto> Phases,
+    bool NominationsVisible,
+    bool ResultsVisible,
+    EventAdminModuleVisibilityDto ModuleVisibility,
+    EventModulesDto EffectiveModules,
+    EventCountsDto Counts
+);
+
+/// <summary>
+/// Updates admin-managed visibility flags without changing the active phase.
+/// </summary>
+public record UpdateEventAdminStateRequest(
+    bool? NominationsVisible,
+    bool? ResultsVisible,
+    EventAdminModuleVisibilityDto? ModuleVisibility
+);
+
+/// <summary>
+/// Switches the event to one of the known phase windows.
+/// </summary>
+public record UpdateEventPhaseRequest(string PhaseType);
+
+/// <summary>
 /// Summary of the member's current voting progress for the active event.
 /// </summary>
 public record EventVotingOverviewDto(
@@ -134,6 +181,7 @@ public record EventFeedPostDto(
     string UserName,
     string Content,
     string? ImageUrl,
+    List<string> MediaUrls,
     DateTimeOffset CreatedAt
 );
 

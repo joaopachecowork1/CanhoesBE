@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
+using Canhoes.Api.Media;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -123,6 +124,7 @@ public sealed class EventsController : ControllerBase
         var legacyState = await _db.CanhoesEventState
             .AsNoTracking()
             .FirstOrDefaultAsync(ct);
+        var moduleVisibility = ParseModuleVisibility(legacyState);
 
         var categoryIds = await _db.AwardCategories
             .AsNoTracking()
@@ -180,6 +182,7 @@ public sealed class EventsController : ControllerBase
                 latestDraw is not null,
                 hasAssignment,
                 legacyState,
+                moduleVisibility,
                 access.IsAdmin
             )
         ));
@@ -302,6 +305,13 @@ public sealed class EventsController : ControllerBase
             .OrderByDescending(x => x.IsPinned)
             .ThenByDescending(x => x.CreatedAtUtc)
             .ToListAsync(ct);
+        var postIds = posts.Select(post => post.Id).ToList();
+
+        var mediaByPostId = await _db.HubPostMedia
+            .AsNoTracking()
+            .Where(x => x.PostId != null && postIds.Contains(x.PostId))
+            .OrderBy(x => x.UploadedAtUtc)
+            .ToListAsync(ct);
 
         var authorIds = posts.Select(x => x.AuthorUserId).Distinct().ToList();
         var authors = await _db.Users
@@ -312,13 +322,22 @@ public sealed class EventsController : ControllerBase
         var dtos = posts.Select(x =>
         {
             var author = authors.TryGetValue(x.AuthorUserId, out var value) ? value : null;
+            var mediaUrls = MediaUrlFormatter.Collect(
+                x.MediaUrl,
+                x.MediaUrlsJson,
+                mediaByPostId
+                    .Where(media => media.PostId == x.Id)
+                    .Select(media => media.Url)
+            );
+
             return new EventFeedPostDto(
                 x.Id,
                 x.EventId,
                 x.AuthorUserId,
                 author is null ? "Unknown" : GetUserName(author),
                 x.Text,
-                x.MediaUrl,
+                mediaUrls.FirstOrDefault(),
+                mediaUrls,
                 new DateTimeOffset(x.CreatedAtUtc, TimeSpan.Zero)
             );
         }).ToList();
@@ -339,9 +358,7 @@ public sealed class EventsController : ControllerBase
         var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == access.UserId, ct);
         if (user is null) return Unauthorized();
 
-        var mediaUrls = string.IsNullOrWhiteSpace(request.ImageUrl)
-            ? []
-            : new List<string> { request.ImageUrl.Trim() };
+        var mediaUrls = MediaUrlFormatter.Collect(request.ImageUrl, null);
 
         var post = new HubPostEntity
         {
@@ -349,7 +366,7 @@ public sealed class EventsController : ControllerBase
             EventId = eventId,
             AuthorUserId = access.UserId,
             Text = request.Content.Trim(),
-            MediaUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim(),
+            MediaUrl = mediaUrls.FirstOrDefault(),
             MediaUrlsJson = JsonSerializer.Serialize(mediaUrls),
             CreatedAtUtc = DateTime.UtcNow,
             IsPinned = false
@@ -365,6 +382,7 @@ public sealed class EventsController : ControllerBase
             GetUserName(user),
             post.Text,
             post.MediaUrl,
+            mediaUrls,
             new DateTimeOffset(post.CreatedAtUtc, TimeSpan.Zero)
         ));
     }
@@ -396,24 +414,225 @@ public sealed class EventsController : ControllerBase
         if (!Enum.TryParse<AwardCategoryKind>(request.Kind, true, out var kind))
             return BadRequest("Invalid kind.");
 
-        var sortOrder = request.SortOrder
-            ?? (await _db.AwardCategories.Where(x => x.EventId == eventId).MaxAsync(x => (int?)x.SortOrder, ct) ?? 0) + 1;
-
-        var category = new AwardCategoryEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            EventId = eventId,
-            Name = request.Title.Trim(),
-            Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim(),
-            Kind = kind,
-            SortOrder = sortOrder,
-            IsActive = true
-        };
-
-        _db.AwardCategories.Add(category);
-        await _db.SaveChangesAsync(ct);
+        var category = await CreateCategoryEntityAsync(
+            eventId,
+            request.Title,
+            request.Description,
+            request.SortOrder,
+            kind,
+            ct);
 
         return Ok(ToEventCategoryDto(category));
+    }
+
+    [HttpGet("{eventId}/admin/categories")]
+    public async Task<ActionResult<List<AwardCategoryDto>>> AdminGetCategories([FromRoute] string eventId, CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var categories = await _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderBy(x => x.SortOrder)
+            .ThenBy(x => x.Name)
+            .ToListAsync(ct);
+
+        return Ok(categories.Select(ToAwardCategoryDto).ToList());
+    }
+
+    [HttpPost("{eventId}/admin/categories")]
+    public async Task<ActionResult<AwardCategoryDto>> AdminCreateCategory(
+        [FromRoute] string eventId,
+        [FromBody] CreateAwardCategoryRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+        if (string.IsNullOrWhiteSpace(request.Name)) return BadRequest("Name is required.");
+        if (!Enum.TryParse<AwardCategoryKind>(request.Kind, true, out var parsedKind))
+            return BadRequest("Invalid kind.");
+
+        var category = await CreateCategoryEntityAsync(
+            eventId,
+            request.Name,
+            request.Description,
+            request.SortOrder,
+            parsedKind,
+            ct);
+
+        return Ok(ToAwardCategoryDto(category));
+    }
+
+    [HttpPut("{eventId}/admin/categories/{categoryId}")]
+    public async Task<ActionResult<AwardCategoryDto>> AdminUpdateCategory(
+        [FromRoute] string eventId,
+        [FromRoute] string categoryId,
+        [FromBody] UpdateAwardCategoryRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var category = await _db.AwardCategories
+            .FirstOrDefaultAsync(x => x.Id == categoryId && x.EventId == eventId, ct);
+
+        if (category is null) return NotFound();
+        AwardCategoryKind? parsedKind = null;
+        if (request.Kind is not null)
+        {
+            if (!Enum.TryParse<AwardCategoryKind>(request.Kind, true, out var kindValue))
+                return BadRequest("Invalid kind.");
+
+            parsedKind = kindValue;
+        }
+
+        if (request.Name is not null)
+        {
+            var normalizedName = request.Name.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedName)) return BadRequest("Name is required.");
+            category.Name = normalizedName;
+        }
+
+        if (request.Description is not null)
+        {
+            category.Description = string.IsNullOrWhiteSpace(request.Description)
+                ? null
+                : request.Description.Trim();
+        }
+
+        if (request.SortOrder.HasValue)
+        {
+            category.SortOrder = request.SortOrder.Value;
+        }
+
+        if (request.IsActive.HasValue)
+        {
+            category.IsActive = request.IsActive.Value;
+        }
+
+        if (request.Kind is not null)
+        {
+            category.Kind = parsedKind!.Value;
+        }
+
+        if (request.VoteQuestion is not null)
+        {
+            category.VoteQuestion = string.IsNullOrWhiteSpace(request.VoteQuestion)
+                ? null
+                : request.VoteQuestion.Trim();
+        }
+
+        if (request.VoteRules is not null)
+        {
+            category.VoteRules = string.IsNullOrWhiteSpace(request.VoteRules)
+                ? null
+                : request.VoteRules.Trim();
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToAwardCategoryDto(category));
+    }
+
+    [HttpDelete("{eventId}/admin/categories/{categoryId}")]
+    public async Task<ActionResult> AdminDeleteCategory(
+        [FromRoute] string eventId,
+        [FromRoute] string categoryId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var category = await _db.AwardCategories
+            .FirstOrDefaultAsync(x => x.Id == categoryId && x.EventId == eventId, ct);
+
+        if (category is null) return NotFound();
+
+        var hasDependents =
+            await _db.Nominees.AsNoTracking().AnyAsync(x => x.EventId == eventId && x.CategoryId == categoryId, ct) ||
+            await _db.Votes.AsNoTracking().AnyAsync(x => x.CategoryId == categoryId, ct) ||
+            await _db.UserVotes.AsNoTracking().AnyAsync(x => x.CategoryId == categoryId, ct);
+
+        if (hasDependents)
+        {
+            return BadRequest("Category has dependent nominees or votes and cannot be deleted.");
+        }
+
+        _db.AwardCategories.Remove(category);
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpGet("{eventId}/admin/state")]
+    public async Task<ActionResult<EventAdminStateDto>> GetAdminState([FromRoute] string eventId, CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        return Ok(await BuildAdminStateDtoAsync(eventId, ct));
+    }
+
+    [HttpPut("{eventId}/admin/state")]
+    public async Task<ActionResult<EventAdminStateDto>> UpdateAdminState(
+        [FromRoute] string eventId,
+        [FromBody] UpdateEventAdminStateRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var legacyState = await GetOrCreateLegacyStateAsync(ct);
+        var nextModuleVisibility = request.ModuleVisibility ?? ParseModuleVisibility(legacyState);
+
+        if (request.NominationsVisible.HasValue)
+        {
+            legacyState.NominationsVisible = request.NominationsVisible.Value;
+        }
+
+        if (request.ResultsVisible.HasValue)
+        {
+            legacyState.ResultsVisible = request.ResultsVisible.Value;
+        }
+
+        legacyState.ModuleVisibilityJson = SerializeModuleVisibility(nextModuleVisibility);
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await BuildAdminStateDtoAsync(eventId, ct));
+    }
+
+    [HttpPut("{eventId}/admin/phase")]
+    public async Task<ActionResult<EventAdminStateDto>> UpdateAdminPhase(
+        [FromRoute] string eventId,
+        [FromBody] UpdateEventPhaseRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+        if (string.IsNullOrWhiteSpace(request.PhaseType)) return BadRequest("PhaseType is required.");
+
+        var phases = await _db.EventPhases
+            .Where(x => x.EventId == eventId)
+            .OrderBy(x => x.StartDateUtc)
+            .ToListAsync(ct);
+
+        var targetPhase = phases.FirstOrDefault(x =>
+            x.Type.Equals(request.PhaseType.Trim(), StringComparison.OrdinalIgnoreCase));
+
+        if (targetPhase is null)
+        {
+            return BadRequest("Invalid phase.");
+        }
+
+        foreach (var phase in phases)
+        {
+            phase.IsActive = phase.Id == targetPhase.Id;
+        }
+
+        var legacyState = await GetOrCreateLegacyStateAsync(ct);
+        ApplyLegacyStateForPhase(legacyState, targetPhase.Type);
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(await BuildAdminStateDtoAsync(eventId, ct));
     }
 
     [HttpGet("{eventId}/voting")]
@@ -823,6 +1042,121 @@ public sealed class EventsController : ControllerBase
     }
 
     /// <summary>
+    /// Ensures the legacy state row exists because older areas of the app and
+    /// the event overview still bridge through that state until the migration to
+    /// fully event-scoped admin controls is complete.
+    /// </summary>
+    private async Task<CanhoesEventStateEntity> GetOrCreateLegacyStateAsync(CancellationToken ct)
+    {
+        var state = await _db.CanhoesEventState.FirstOrDefaultAsync(ct);
+        if (state is not null) return state;
+
+        state = new CanhoesEventStateEntity();
+        _db.CanhoesEventState.Add(state);
+        await _db.SaveChangesAsync(ct);
+        return state;
+    }
+
+    private async Task<EventAdminStateDto> BuildAdminStateDtoAsync(string eventId, CancellationToken ct)
+    {
+        var legacyState = await GetOrCreateLegacyStateAsync(ct);
+        var phases = await _db.EventPhases
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderBy(x => x.StartDateUtc)
+            .ToListAsync(ct);
+
+        var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
+        var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
+        var moduleVisibility = ParseModuleVisibility(legacyState);
+
+        return new EventAdminStateDto(
+            eventId,
+            activePhase,
+            phases.Select(ToEventPhaseDto).ToList(),
+            legacyState.NominationsVisible,
+            legacyState.ResultsVisible,
+            moduleVisibility,
+            BuildModuleVisibility(
+                activePhaseEntity,
+                await _db.SecretSantaDraws.AsNoTracking().AnyAsync(ct),
+                false,
+                legacyState,
+                moduleVisibility,
+                isAdmin: false
+            ),
+            new EventCountsDto(
+                await _db.EventMembers.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
+                await _db.HubPosts.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
+                await _db.AwardCategories.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
+                await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.Status == "pending", ct),
+                await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId, ct)
+            )
+        );
+    }
+
+    private static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? legacyState)
+    {
+        if (string.IsNullOrWhiteSpace(legacyState?.ModuleVisibilityJson))
+        {
+            return DefaultModuleVisibility();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<EventAdminModuleVisibilityDto>(legacyState.ModuleVisibilityJson)
+                ?? DefaultModuleVisibility();
+        }
+        catch
+        {
+            return DefaultModuleVisibility();
+        }
+    }
+
+    private static string SerializeModuleVisibility(EventAdminModuleVisibilityDto visibility) =>
+        JsonSerializer.Serialize(visibility);
+
+    private static EventAdminModuleVisibilityDto DefaultModuleVisibility() =>
+        new(
+            Feed: true,
+            SecretSanta: true,
+            Wishlist: true,
+            Categories: true,
+            Voting: true,
+            Gala: true,
+            Stickers: true,
+            Measures: true,
+            Nominees: true
+        );
+
+    private static void ApplyLegacyStateForPhase(CanhoesEventStateEntity legacyState, string phaseType)
+    {
+        switch (phaseType)
+        {
+            case EventPhaseTypes.Draw:
+                legacyState.Phase = "locked";
+                legacyState.NominationsVisible = false;
+                legacyState.ResultsVisible = false;
+                break;
+            case EventPhaseTypes.Proposals:
+                legacyState.Phase = "nominations";
+                legacyState.NominationsVisible = true;
+                legacyState.ResultsVisible = false;
+                break;
+            case EventPhaseTypes.Voting:
+                legacyState.Phase = "voting";
+                legacyState.NominationsVisible = false;
+                legacyState.ResultsVisible = false;
+                break;
+            case EventPhaseTypes.Results:
+                legacyState.Phase = "gala";
+                legacyState.NominationsVisible = false;
+                legacyState.ResultsVisible = true;
+                break;
+        }
+    }
+
+    /// <summary>
     /// Bridges the new phase model with the legacy admin toggles that still
     /// exist in <see cref="CanhoesEventStateEntity"/> until that state is fully
     /// consolidated into the event-scoped model.
@@ -832,6 +1166,7 @@ public sealed class EventsController : ControllerBase
         bool hasSecretSantaDraw,
         bool hasSecretSantaAssignment,
         CanhoesEventStateEntity? legacyState,
+        EventAdminModuleVisibilityDto moduleVisibility,
         bool isAdmin)
     {
         var legacyPhase = legacyState?.Phase?.Trim().ToLowerInvariant();
@@ -849,18 +1184,38 @@ public sealed class EventsController : ControllerBase
 
         var proposalModulesVisible = isAdmin || (nominationsVisible && isProposalPhase);
         var resultsModulesVisible = isAdmin || resultsVisible || isResultsPhase;
+        var baseSecretSantaVisible = isDrawPhase || hasSecretSantaDraw || hasSecretSantaAssignment || isVotingPhase || isResultsPhase;
+        var baseCategoriesVisible = isProposalPhase || isVotingPhase || resultsModulesVisible;
+        var baseVotingVisible = isVotingPhase;
+        var baseNomineesVisible = nominationsVisible || resultsModulesVisible;
+
+        if (isAdmin)
+        {
+            return new EventModulesDto(
+                Feed: true,
+                SecretSanta: true,
+                Wishlist: true,
+                Categories: true,
+                Voting: true,
+                Gala: true,
+                Stickers: true,
+                Measures: true,
+                Nominees: true,
+                Admin: true
+            );
+        }
 
         return new EventModulesDto(
-            Feed: true,
-            SecretSanta: isAdmin || isDrawPhase || hasSecretSantaDraw || hasSecretSantaAssignment || isVotingPhase || isResultsPhase,
-            Wishlist: true,
-            Categories: isAdmin || isProposalPhase || isVotingPhase || resultsModulesVisible,
-            Voting: isAdmin || isVotingPhase,
-            Gala: resultsModulesVisible,
-            Stickers: proposalModulesVisible,
-            Measures: proposalModulesVisible,
-            Nominees: isAdmin || nominationsVisible || resultsModulesVisible,
-            Admin: isAdmin
+            Feed: moduleVisibility.Feed,
+            SecretSanta: moduleVisibility.SecretSanta && baseSecretSantaVisible,
+            Wishlist: moduleVisibility.Wishlist,
+            Categories: moduleVisibility.Categories && baseCategoriesVisible,
+            Voting: moduleVisibility.Voting && baseVotingVisible,
+            Gala: moduleVisibility.Gala && resultsModulesVisible,
+            Stickers: moduleVisibility.Stickers && proposalModulesVisible,
+            Measures: moduleVisibility.Measures && proposalModulesVisible,
+            Nominees: moduleVisibility.Nominees && baseNomineesVisible,
+            Admin: false
         );
     }
 
@@ -879,6 +1234,18 @@ public sealed class EventsController : ControllerBase
     private static EventCategoryDto ToEventCategoryDto(AwardCategoryEntity entity) =>
         new(entity.Id, entity.EventId, entity.Name, entity.Kind.ToString(), entity.IsActive, entity.Description);
 
+    private static AwardCategoryDto ToAwardCategoryDto(AwardCategoryEntity entity) =>
+        new(
+            entity.Id,
+            entity.Name,
+            entity.SortOrder,
+            entity.IsActive,
+            entity.Kind.ToString(),
+            entity.Description,
+            entity.VoteQuestion,
+            entity.VoteRules
+        );
+
     private static EventProposalDto ToEventProposalDto(CategoryProposalEntity entity) =>
         new(
             entity.Id,
@@ -893,6 +1260,35 @@ public sealed class EventsController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(entity.Description)) return entity.Name;
         return $"{entity.Name}\n\n{entity.Description}";
+    }
+
+    private async Task<AwardCategoryEntity> CreateCategoryEntityAsync(
+        string eventId,
+        string name,
+        string? description,
+        int? sortOrder,
+        AwardCategoryKind kind,
+        CancellationToken ct)
+    {
+        var nextSortOrder = sortOrder
+            ?? (await _db.AwardCategories
+                .Where(x => x.EventId == eventId)
+                .MaxAsync(x => (int?)x.SortOrder, ct) ?? 0) + 1;
+
+        var category = new AwardCategoryEntity
+        {
+            Id = Guid.NewGuid().ToString(),
+            EventId = eventId,
+            Name = name.Trim(),
+            Description = string.IsNullOrWhiteSpace(description) ? null : description.Trim(),
+            Kind = kind,
+            SortOrder = nextSortOrder,
+            IsActive = true
+        };
+
+        _db.AwardCategories.Add(category);
+        await _db.SaveChangesAsync(ct);
+        return category;
     }
 
     private static string GetUserName(UserEntity user) =>

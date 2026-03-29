@@ -99,6 +99,11 @@ public class CanhoesDbContext : DbContext
         modelBuilder.Entity<CanhoesEventStateEntity>()
             .HasKey(x => x.Id);
 
+        modelBuilder.Entity<CanhoesEventStateEntity>()
+            .Property(x => x.ModuleVisibilityJson)
+            .HasColumnType("nvarchar(max)")
+            .HasDefaultValue("{}");
+
         // Hub poll: user can only have one vote per post.
         modelBuilder.Entity<HubPostPollVoteEntity>()
             .HasIndex(x => new { x.PostId, x.UserId })

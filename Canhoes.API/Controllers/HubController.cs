@@ -5,6 +5,7 @@ using System.Text.Json;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.DTOs;
+using Canhoes.Api.Media;
 using Canhoes.Api.Models;
 
 namespace Canhoes.Api.Controllers;
@@ -48,6 +49,11 @@ public sealed class HubController : ControllerBase
             .ToListAsync(ct);
 
         var postIds = posts.Select(p => p.Id).ToList();
+        var mediaByPostId = await _db.HubPostMedia
+            .AsNoTracking()
+            .Where(x => x.PostId != null && postIds.Contains(x.PostId))
+            .OrderBy(x => x.UploadedAtUtc)
+            .ToListAsync(ct);
 
         var commentCounts = await _db.HubPostComments
             .AsNoTracking()
@@ -111,26 +117,15 @@ public sealed class HubController : ControllerBase
             .GroupBy(v => v.OptionId)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        List<string> ParseMedia(string? mediaUrl, string? mediaUrlsJson)
-        {
-            var list = new List<string>();
-            if (!string.IsNullOrWhiteSpace(mediaUrlsJson))
-            {
-                try
-                {
-                    var arr = JsonSerializer.Deserialize<List<string>>(mediaUrlsJson);
-                    if (arr is { Count: > 0 }) list.AddRange(arr.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()));
-                }
-                catch { /* ignore */ }
-            }
-            if (!string.IsNullOrWhiteSpace(mediaUrl) && !list.Contains(mediaUrl.Trim()))
-                list.Insert(0, mediaUrl.Trim());
-            return list;
-        }
-
         var dtos = posts.Select(p =>
         {
-            var media = ParseMedia(p.MediaUrl, p.MediaUrlsJson);
+            var media = MediaUrlFormatter.Collect(
+                p.MediaUrl,
+                p.MediaUrlsJson,
+                mediaByPostId
+                    .Where(mediaRecord => mediaRecord.PostId == p.Id)
+                    .Select(mediaRecord => mediaRecord.Url)
+            );
 
             HubPollDto? pollDto = null;
             var poll = polls.FirstOrDefault(x => x.PostId == p.Id);
@@ -169,7 +164,7 @@ public sealed class HubController : ControllerBase
                 AuthorUserId = p.AuthorUserId.ToString(),
                 AuthorName = authors.TryGetValue(p.AuthorUserId, out var n) ? n : "Unknown",
                 Text = p.Text,
-                MediaUrl = p.MediaUrl,
+                MediaUrl = media.FirstOrDefault(),
                 MediaUrls = media,
                 IsPinned = p.IsPinned,
                 CreatedAtUtc = p.CreatedAtUtc,
@@ -205,6 +200,7 @@ public sealed class HubController : ControllerBase
         // Backwards compatible single URL
         if (!string.IsNullOrWhiteSpace(req.MediaUrl) && !mediaUrls.Contains(req.MediaUrl.Trim()))
             mediaUrls.Insert(0, req.MediaUrl.Trim());
+        mediaUrls = MediaUrlFormatter.Collect(req.MediaUrl, JsonSerializer.Serialize(mediaUrls));
 
         // Optional poll (single choice)
         var pollQuestion = string.IsNullOrWhiteSpace(req.PollQuestion) ? null : req.PollQuestion.Trim();

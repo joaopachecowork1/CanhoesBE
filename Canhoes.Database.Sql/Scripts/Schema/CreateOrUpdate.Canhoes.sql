@@ -335,8 +335,16 @@ BEGIN
         Id INT NOT NULL PRIMARY KEY,
         Phase NVARCHAR(32) NOT NULL,
         NominationsVisible BIT NOT NULL CONSTRAINT DF_CanhoesEventState_NominationsVisible DEFAULT(1),
-        ResultsVisible BIT NOT NULL CONSTRAINT DF_CanhoesEventState_ResultsVisible DEFAULT(0)
+        ResultsVisible BIT NOT NULL CONSTRAINT DF_CanhoesEventState_ResultsVisible DEFAULT(0),
+        ModuleVisibilityJson NVARCHAR(MAX) NOT NULL CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}')
     );
+END
+GO
+
+IF COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
+BEGIN
+    ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NOT NULL
+        CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}');
 END
 GO
 
