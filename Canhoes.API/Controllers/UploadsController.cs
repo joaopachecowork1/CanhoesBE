@@ -65,12 +65,35 @@ public sealed class UploadsController : ControllerBase
             return NotFound();
         }
 
-        var media = await _db.HubPostMedia
+        var mediaCandidates = await _db.HubPostMedia
             .AsNoTracking()
-            .Where(x => x.ContentBytes.Length > 0)
             .Where(x => x.Url == normalizedUrl || x.Url.EndsWith("/" + fileName))
             .OrderByDescending(x => x.UploadedAtUtc)
-            .FirstOrDefaultAsync(ct);
+            .ToListAsync(ct);
+
+        var media = mediaCandidates.FirstOrDefault(x => x.ContentBytes is { Length: > 0 });
+
+        if (media is null)
+        {
+            var relatedPostId = await _db.HubPosts
+                .AsNoTracking()
+                .Where(x =>
+                    x.MediaUrl == normalizedUrl ||
+                    (x.MediaUrl != null && x.MediaUrl.EndsWith("/" + fileName)) ||
+                    x.MediaUrlsJson.Contains(fileName))
+                .Select(x => x.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (!string.IsNullOrWhiteSpace(relatedPostId))
+            {
+                media = _db.HubPostMedia
+                    .AsNoTracking()
+                    .Where(x => x.PostId == relatedPostId)
+                    .OrderByDescending(x => x.UploadedAtUtc)
+                    .AsEnumerable()
+                    .FirstOrDefault(x => x.ContentBytes is { Length: > 0 });
+            }
+        }
 
         if (media is null)
         {

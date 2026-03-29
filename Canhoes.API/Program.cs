@@ -27,7 +27,17 @@ if (int.TryParse(publicPort, out var parsedPort) && parsedPort > 0)
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    // Legacy controllers still expose nested DTOs with the same short names as
+    // newer event-scoped models. Use stable fully-qualified schema ids so
+    // OpenAPI generation stays deterministic without changing JSON contracts.
+    options.CustomSchemaIds(type =>
+        (type.FullName ?? type.Name)
+            .Replace("+", ".")
+            .Replace("[", "_")
+            .Replace("]", "_"));
+});
 
 builder.Services.AddDbContext<CanhoesDbContext>(opt =>
 {
