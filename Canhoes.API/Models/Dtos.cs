@@ -75,7 +75,41 @@ public record PendingAdminDto(
     List<MeasureProposalDto> MeasureProposals
 );
 
+/// <summary>
+/// Keeps proposal history grouped by moderation status so the admin panel can
+/// render both the pending queue and the archive without recomputing buckets.
+/// </summary>
+public record ProposalsByStatusDto<T>(
+    List<T> Pending,
+    List<T> Approved,
+    List<T> Rejected
+);
+
+/// <summary>
+/// Aggregates category and measure proposal history for the active event.
+/// </summary>
+public record AdminProposalsHistoryDto(
+    ProposalsByStatusDto<CategoryProposalDto> CategoryProposals,
+    ProposalsByStatusDto<MeasureProposalDto> MeasureProposals
+);
+
 public record SetNomineeCategoryRequest(string? CategoryId);
+
+public record AdminVoteAuditRowDto(
+    string CategoryId,
+    string NomineeId,
+    Guid UserId,
+    DateTimeOffset UpdatedAtUtc
+);
+
+/// <summary>
+/// Minimal vote audit payload used by the admin panel to inspect how many votes
+/// were cast plus the raw rows needed for filtering and drill-down.
+/// </summary>
+public record AdminVotesDto(
+    int Total,
+    List<AdminVoteAuditRowDto> Votes
+);
 
 public record CanhoesResultNomineeDto(
     string NomineeId,

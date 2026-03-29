@@ -635,6 +635,399 @@ public sealed class EventsController : ControllerBase
         return Ok(await BuildAdminStateDtoAsync(eventId, ct));
     }
 
+    /// <summary>
+    /// Marks the selected event as active and deactivates every other event.
+    /// The chrome picks the active event from the list endpoint, so this is the
+    /// single admin action that switches the whole app to another cycle.
+    /// </summary>
+    [HttpPut("{eventId}/admin/activate")]
+    public async Task<ActionResult<EventSummaryDto>> ActivateEvent(
+        [FromRoute] string eventId,
+        CancellationToken ct)
+    {
+        var (access, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var events = await _db.Events.ToListAsync(ct);
+        foreach (var eventEntity in events)
+        {
+            eventEntity.IsActive = eventEntity.Id == eventId;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new EventSummaryDto(access.Event.Id, access.Event.Name, true));
+    }
+
+    /// <summary>
+    /// Returns the event member list enriched with the user profile data needed
+    /// by the admin UI.
+    /// </summary>
+    [HttpGet("{eventId}/admin/members")]
+    public async Task<ActionResult<List<PublicUserDto>>> AdminGetMembers(
+        [FromRoute] string eventId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var members = await _db.EventMembers
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .ToListAsync(ct);
+
+        var userIds = members.Select(x => x.UserId).Distinct().ToList();
+        var users = await _db.Users
+            .AsNoTracking()
+            .Where(x => userIds.Contains(x.Id))
+            .ToListAsync(ct);
+
+        var usersById = users.ToDictionary(x => x.Id);
+
+        var memberDtos = members
+            .Where(member => usersById.ContainsKey(member.UserId))
+            .OrderByDescending(member => member.Role == EventRoles.Admin)
+            .ThenBy(member => GetUserName(usersById[member.UserId]))
+            .Select(member => ToPublicUserDto(usersById[member.UserId], member.Role == EventRoles.Admin))
+            .ToList();
+
+        return Ok(memberDtos);
+    }
+
+    /// <summary>
+    /// Returns the event-scoped audit rows used by the admin vote history.
+    /// This intentionally mirrors the legacy shape so the frontend can move to
+    /// the v1 route without changing the table behavior.
+    /// </summary>
+    [HttpGet("{eventId}/admin/votes")]
+    public async Task<ActionResult<AdminVotesDto>> AdminVotes(
+        [FromRoute] string eventId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var categoryIds = await _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+
+        var votes = await _db.Votes
+            .AsNoTracking()
+            .Where(x => categoryIds.Contains(x.CategoryId))
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ToListAsync(ct);
+
+        return Ok(new AdminVotesDto(
+            votes.Count,
+            votes.Select(ToAdminVoteAuditRowDto).ToList()
+        ));
+    }
+
+    /// <summary>
+    /// Returns category proposals for the target event, optionally filtered by
+    /// moderation status.
+    /// </summary>
+    [HttpGet("{eventId}/admin/category-proposals")]
+    public async Task<ActionResult<List<CategoryProposalDto>>> AdminGetCategoryProposals(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var normalizedStatus = NormalizeProposalStatusFilter(status);
+        var query = _db.CategoryProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var proposals = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        return Ok(proposals.Select(ToCategoryProposalDto).ToList());
+    }
+
+    /// <summary>
+    /// Returns the grouped proposal history used by the admin moderation view.
+    /// </summary>
+    [HttpGet("{eventId}/admin/proposals")]
+    public async Task<ActionResult<AdminProposalsHistoryDto>> AdminGetProposalsHistory(
+        [FromRoute] string eventId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var categoryProposals = await _db.CategoryProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        var measureProposals = await _db.MeasureProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        return Ok(new AdminProposalsHistoryDto(
+            BuildProposalHistory(
+                categoryProposals.Select(ToCategoryProposalDto).ToList(),
+                proposal => proposal.Status),
+            BuildProposalHistory(
+                measureProposals.Select(ToMeasureProposalDto).ToList(),
+                proposal => proposal.Status)
+        ));
+    }
+
+    /// <summary>
+    /// Returns event-scoped measure proposals, optionally filtered by status.
+    /// </summary>
+    [HttpGet("{eventId}/admin/measure-proposals")]
+    public async Task<ActionResult<List<MeasureProposalDto>>> AdminGetMeasureProposals(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var normalizedStatus = NormalizeProposalStatusFilter(status);
+        var query = _db.MeasureProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var proposals = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        return Ok(proposals.Select(ToMeasureProposalDto).ToList());
+    }
+
+    [HttpPatch("{eventId}/admin/measure-proposals/{proposalId}")]
+    [HttpPut("{eventId}/admin/measure-proposals/{proposalId}")]
+    public async Task<ActionResult<MeasureProposalDto>> AdminUpdateMeasureProposal(
+        [FromRoute] string eventId,
+        [FromRoute] string proposalId,
+        [FromBody] UpdateMeasureProposalRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+        if (string.IsNullOrWhiteSpace(proposalId)) return BadRequest("proposalId is required.");
+
+        var proposal = await _db.MeasureProposals
+            .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+
+        if (proposal is null) return NotFound();
+
+        if (!string.IsNullOrWhiteSpace(request.Text))
+        {
+            proposal.Text = request.Text.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Status))
+        {
+            var normalizedStatus = NormalizeProposalStatus(request.Status);
+            if (normalizedStatus is null)
+            {
+                return BadRequest("Invalid status. Use pending, approved or rejected.");
+            }
+
+            proposal.Status = normalizedStatus;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToMeasureProposalDto(proposal));
+    }
+
+    [HttpDelete("{eventId}/admin/measure-proposals/{proposalId}")]
+    public async Task<ActionResult> AdminDeleteMeasureProposal(
+        [FromRoute] string eventId,
+        [FromRoute] string proposalId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var proposal = await _db.MeasureProposals
+            .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+
+        if (proposal is null) return NotFound();
+
+        _db.MeasureProposals.Remove(proposal);
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpPost("{eventId}/admin/measure-proposals/{proposalId}/approve")]
+    public async Task<ActionResult<GalaMeasureDto>> AdminApproveMeasureProposal(
+        [FromRoute] string eventId,
+        [FromRoute] string proposalId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var proposal = await _db.MeasureProposals
+            .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+
+        if (proposal is null) return NotFound();
+
+        proposal.Status = "approved";
+
+        var measure = new GalaMeasureEntity
+        {
+            Id = Guid.NewGuid().ToString(),
+            EventId = eventId,
+            Text = proposal.Text,
+            IsActive = true,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        _db.Measures.Add(measure);
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new GalaMeasureDto(
+            measure.Id,
+            measure.Text,
+            measure.IsActive,
+            new DateTimeOffset(measure.CreatedAtUtc, TimeSpan.Zero)
+        ));
+    }
+
+    [HttpPost("{eventId}/admin/measure-proposals/{proposalId}/reject")]
+    public async Task<ActionResult<MeasureProposalDto>> AdminRejectMeasureProposal(
+        [FromRoute] string eventId,
+        [FromRoute] string proposalId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var proposal = await _db.MeasureProposals
+            .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+
+        if (proposal is null) return NotFound();
+
+        proposal.Status = "rejected";
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(ToMeasureProposalDto(proposal));
+    }
+
+    [HttpGet("{eventId}/admin/nominees")]
+    public async Task<ActionResult<List<NomineeDto>>> AdminGetNominees(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        var query = _db.Nominees
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var nominees = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        return Ok(nominees.Select(ToNomineeDto).ToList());
+    }
+
+    [HttpPost("{eventId}/admin/nominees/{nomineeId}/set-category")]
+    public async Task<ActionResult<NomineeDto>> AdminSetNomineeCategory(
+        [FromRoute] string eventId,
+        [FromRoute] string nomineeId,
+        [FromBody] SetNomineeCategoryRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var nominee = await _db.Nominees
+            .FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
+
+        if (nominee is null) return NotFound();
+
+        if (!string.IsNullOrWhiteSpace(request.CategoryId))
+        {
+            var categoryExists = await _db.AwardCategories
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == request.CategoryId && x.EventId == eventId, ct);
+
+            if (!categoryExists) return BadRequest("Invalid category.");
+        }
+
+        nominee.CategoryId = string.IsNullOrWhiteSpace(request.CategoryId)
+            ? null
+            : request.CategoryId.Trim();
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToNomineeDto(nominee));
+    }
+
+    [HttpPost("{eventId}/admin/nominees/{nomineeId}/approve")]
+    public async Task<ActionResult<NomineeDto>> AdminApproveNominee(
+        [FromRoute] string eventId,
+        [FromRoute] string nomineeId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var nominee = await _db.Nominees
+            .FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
+
+        if (nominee is null) return NotFound();
+        if (string.IsNullOrWhiteSpace(nominee.CategoryId))
+            return BadRequest("Nominee must have a category before approval.");
+
+        nominee.Status = "approved";
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(ToNomineeDto(nominee));
+    }
+
+    [HttpPost("{eventId}/admin/nominees/{nomineeId}/reject")]
+    public async Task<ActionResult<NomineeDto>> AdminRejectNominee(
+        [FromRoute] string eventId,
+        [FromRoute] string nomineeId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var nominee = await _db.Nominees
+            .FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
+
+        if (nominee is null) return NotFound();
+
+        nominee.Status = "rejected";
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(ToNomineeDto(nominee));
+    }
+
     [HttpGet("{eventId}/voting")]
     public async Task<ActionResult<EventVotingBoardDto>> GetVotingBoard([FromRoute] string eventId, CancellationToken ct)
     {
@@ -1246,6 +1639,44 @@ public sealed class EventsController : ControllerBase
             entity.VoteRules
         );
 
+    private static PublicUserDto ToPublicUserDto(UserEntity entity, bool isAdmin) =>
+        new(entity.Id, entity.Email, entity.DisplayName, isAdmin);
+
+    private static NomineeDto ToNomineeDto(NomineeEntity entity) =>
+        new(
+            entity.Id,
+            entity.CategoryId,
+            entity.Title,
+            entity.ImageUrl,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    private static CategoryProposalDto ToCategoryProposalDto(CategoryProposalEntity entity) =>
+        new(
+            entity.Id,
+            entity.Name,
+            entity.Description,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    private static MeasureProposalDto ToMeasureProposalDto(MeasureProposalEntity entity) =>
+        new(
+            entity.Id,
+            entity.Text,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    private static AdminVoteAuditRowDto ToAdminVoteAuditRowDto(VoteEntity entity) =>
+        new(
+            entity.CategoryId,
+            entity.NomineeId,
+            entity.UserId,
+            new DateTimeOffset(entity.UpdatedAtUtc, TimeSpan.Zero)
+        );
+
     private static EventProposalDto ToEventProposalDto(CategoryProposalEntity entity) =>
         new(
             entity.Id,
@@ -1260,6 +1691,41 @@ public sealed class EventsController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(entity.Description)) return entity.Name;
         return $"{entity.Name}\n\n{entity.Description}";
+    }
+
+    private static ProposalsByStatusDto<T> BuildProposalHistory<T>(
+        List<T> items,
+        Func<T, string> statusSelector)
+    {
+        return new ProposalsByStatusDto<T>(
+            items.Where(item => string.Equals(statusSelector(item), "pending", StringComparison.OrdinalIgnoreCase)).ToList(),
+            items.Where(item => string.Equals(statusSelector(item), "approved", StringComparison.OrdinalIgnoreCase)).ToList(),
+            items.Where(item => string.Equals(statusSelector(item), "rejected", StringComparison.OrdinalIgnoreCase)).ToList()
+        );
+    }
+
+    private static string? NormalizeProposalStatusFilter(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return null;
+        return NormalizeProposalStatus(status);
+    }
+
+    private static string? NormalizeProposalStatus(string status)
+    {
+        var normalizedStatus = status.Trim().ToLowerInvariant();
+        return normalizedStatus is "pending" or "approved" or "rejected"
+            ? normalizedStatus
+            : null;
+    }
+
+    private static string? NormalizeNomineeStatusFilter(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return null;
+
+        var normalizedStatus = status.Trim().ToLowerInvariant();
+        return normalizedStatus is "pending" or "approved" or "rejected"
+            ? normalizedStatus
+            : null;
     }
 
     private async Task<AwardCategoryEntity> CreateCategoryEntityAsync(

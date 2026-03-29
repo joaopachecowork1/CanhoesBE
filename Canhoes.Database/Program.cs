@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Configuration.AddJsonFile("database.settings.json", optional: true, reloadOnChange: false);
@@ -21,14 +22,18 @@ if (string.IsNullOrWhiteSpace(webRootPath))
 
 builder.Services.AddDbContext<CanhoesDbContext>(options =>
 {
-    options.UseSqlServer(connectionString);
+    options.UseSqlServer(connectionString, sqlOptions =>
+    {
+        sqlOptions.EnableRetryOnFailure();
+    });
 });
 
 using var host = builder.Build();
 using var scope = host.Services.CreateScope();
 
 var db = scope.ServiceProvider.GetRequiredService<CanhoesDbContext>();
+var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Canhoes.Database");
 
-await DatabaseSetupRunner.InitializeAsync(db, webRootPath);
+await DatabaseSetupRunner.InitializeAsync(db, logger, webRootPath);
 
 Console.WriteLine("Canhoes database setup completed.");
