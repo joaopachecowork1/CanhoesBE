@@ -755,6 +755,80 @@ public sealed class EventsController : ControllerBase
     }
 
     /// <summary>
+    /// Lets the control center correct category proposals before approving,
+    /// rejecting or restoring them.
+    /// </summary>
+    [HttpPatch("{eventId}/admin/category-proposals/{proposalId}")]
+    [HttpPut("{eventId}/admin/category-proposals/{proposalId}")]
+    public async Task<ActionResult<CategoryProposalDto>> AdminUpdateCategoryProposal(
+        [FromRoute] string eventId,
+        [FromRoute] string proposalId,
+        [FromBody] UpdateAdminCategoryProposalRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+        if (string.IsNullOrWhiteSpace(proposalId)) return BadRequest("proposalId is required.");
+
+        var proposal = await _db.CategoryProposals
+            .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+
+        if (proposal is null) return NotFound();
+
+        if (request.Name is not null)
+        {
+            var normalizedName = request.Name.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedName)) return BadRequest("Name is required.");
+            proposal.Name = normalizedName;
+        }
+
+        if (request.Description is not null)
+        {
+            proposal.Description = string.IsNullOrWhiteSpace(request.Description)
+                ? null
+                : request.Description.Trim();
+        }
+
+        if (request.Status is not null)
+        {
+            var normalizedStatus = NormalizeProposalStatus(request.Status);
+            if (normalizedStatus is null)
+            {
+                return BadRequest("Invalid status. Use pending, approved or rejected.");
+            }
+
+            await ApplyCategoryProposalStatusAsync(proposal, eventId, normalizedStatus, ct);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToCategoryProposalDto(proposal));
+    }
+
+    /// <summary>
+    /// Removes category proposals that are noise or duplicates without touching
+    /// the real category archive.
+    /// </summary>
+    [HttpDelete("{eventId}/admin/category-proposals/{proposalId}")]
+    public async Task<ActionResult> AdminDeleteCategoryProposal(
+        [FromRoute] string eventId,
+        [FromRoute] string proposalId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+        if (string.IsNullOrWhiteSpace(proposalId)) return BadRequest("proposalId is required.");
+
+        var proposal = await _db.CategoryProposals
+            .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+
+        if (proposal is null) return NotFound();
+
+        _db.CategoryProposals.Remove(proposal);
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    /// <summary>
     /// Returns the grouped proposal history used by the admin moderation view.
     /// </summary>
     [HttpGet("{eventId}/admin/proposals")]
@@ -1285,37 +1359,11 @@ public sealed class EventsController : ControllerBase
         if (proposal is null) return NotFound();
         if (string.IsNullOrWhiteSpace(request.Status)) return BadRequest("Status is required.");
 
-        var status = request.Status.Trim().ToLowerInvariant();
-        if (status is not ("pending" or "approved" or "rejected"))
+        var status = NormalizeProposalStatus(request.Status);
+        if (status is null)
             return BadRequest("Invalid status.");
 
-        proposal.Status = status;
-
-        if (status == "approved")
-        {
-            var categoryExists = await _db.AwardCategories
-                .AsNoTracking()
-                .AnyAsync(x => x.EventId == eventId && x.Name == proposal.Name, ct);
-
-            if (!categoryExists)
-            {
-                var nextSortOrder = (await _db.AwardCategories
-                    .Where(x => x.EventId == eventId)
-                    .MaxAsync(x => (int?)x.SortOrder, ct) ?? 0) + 1;
-
-                _db.AwardCategories.Add(new AwardCategoryEntity
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    EventId = eventId,
-                    Name = proposal.Name,
-                    Description = proposal.Description,
-                    SortOrder = nextSortOrder,
-                    Kind = AwardCategoryKind.Sticker,
-                    IsActive = true
-                });
-            }
-        }
-
+        await ApplyCategoryProposalStatusAsync(proposal, eventId, status, ct);
         await _db.SaveChangesAsync(ct);
 
         return Ok(ToEventProposalDto(proposal));
@@ -1375,6 +1423,40 @@ public sealed class EventsController : ControllerBase
             item.Url,
             new DateTimeOffset(item.UpdatedAtUtc, TimeSpan.Zero)
         ));
+    }
+
+    private async Task ApplyCategoryProposalStatusAsync(
+        CategoryProposalEntity proposal,
+        string eventId,
+        string status,
+        CancellationToken ct)
+    {
+        proposal.Status = status;
+
+        if (status == "approved")
+        {
+            var categoryExists = await _db.AwardCategories
+                .AsNoTracking()
+                .AnyAsync(x => x.EventId == eventId && x.Name == proposal.Name, ct);
+
+            if (!categoryExists)
+            {
+                var nextSortOrder = (await _db.AwardCategories
+                    .Where(x => x.EventId == eventId)
+                    .MaxAsync(x => (int?)x.SortOrder, ct) ?? 0) + 1;
+
+                _db.AwardCategories.Add(new AwardCategoryEntity
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    EventId = eventId,
+                    Name = proposal.Name,
+                    Description = proposal.Description,
+                    SortOrder = nextSortOrder,
+                    Kind = AwardCategoryKind.Sticker,
+                    IsActive = true
+                });
+            }
+        }
     }
 
     /// <summary>

@@ -256,6 +256,17 @@ public record CreateEventProposalRequest(string Content);
 
 public record UpdateEventProposalRequest(string Status);
 
+/// <summary>
+/// Admin-facing update payload for category proposals. The public event
+/// proposal contract only toggles status, but the control center also needs to
+/// correct title/description before approving or archiving a proposal.
+/// </summary>
+public record UpdateAdminCategoryProposalRequest(
+    string? Name,
+    string? Description,
+    string? Status
+);
+
 public record EventWishlistItemDto(
     string Id,
     Guid UserId,
