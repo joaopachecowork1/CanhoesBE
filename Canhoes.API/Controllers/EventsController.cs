@@ -37,13 +37,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<List<EventSummaryDto>>> ListEvents(CancellationToken ct)
     {
-        var events = await _db.Events
-            .AsNoTracking()
-            .OrderByDescending(x => x.IsActive)
-            .ThenBy(x => x.Name)
-            .ToListAsync(ct);
-
-        return Ok(events.Select(ToEventSummaryDto).ToList());
+        return Ok(await LoadEventSummariesAsync(ct));
     }
 
     [HttpGet("{eventId}")]
@@ -431,14 +425,7 @@ public sealed class EventsController : ControllerBase
         var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
-        var categories = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderBy(x => x.SortOrder)
-            .ThenBy(x => x.Name)
-            .ToListAsync(ct);
-
-        return Ok(categories.Select(ToAwardCategoryDto).ToList());
+        return Ok(await LoadAdminCategoriesAsync(eventId, ct));
     }
 
     [HttpPost("{eventId}/admin/categories")]
@@ -570,6 +557,20 @@ public sealed class EventsController : ControllerBase
         if (error is not null) return error;
 
         return Ok(await BuildAdminStateDtoAsync(eventId, ct));
+    }
+
+    /// <summary>
+    /// Returns the full admin control-center bootstrap for the selected event.
+    /// </summary>
+    [HttpGet("{eventId}/admin/bootstrap")]
+    public async Task<ActionResult<EventAdminBootstrapDto>> GetAdminBootstrap(
+        [FromRoute] string eventId,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        return Ok(await BuildAdminBootstrapDtoAsync(eventId, ct));
     }
 
     [HttpPut("{eventId}/admin/state")]
@@ -778,27 +779,7 @@ public sealed class EventsController : ControllerBase
         var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
-        var members = await _db.EventMembers
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .ToListAsync(ct);
-
-        var userIds = members.Select(x => x.UserId).Distinct().ToList();
-        var users = await _db.Users
-            .AsNoTracking()
-            .Where(x => userIds.Contains(x.Id))
-            .ToListAsync(ct);
-
-        var usersById = users.ToDictionary(x => x.Id);
-
-        var memberDtos = members
-            .Where(member => usersById.ContainsKey(member.UserId))
-            .OrderByDescending(member => member.Role == EventRoles.Admin)
-            .ThenBy(member => GetUserName(usersById[member.UserId]))
-            .Select(member => ToPublicUserDto(usersById[member.UserId], member.Role == EventRoles.Admin))
-            .ToList();
-
-        return Ok(memberDtos);
+        return Ok(await LoadAdminMembersAsync(eventId, ct));
     }
 
     /// <summary>
@@ -814,22 +795,7 @@ public sealed class EventsController : ControllerBase
         var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
-        var categoryIds = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .Select(x => x.Id)
-            .ToListAsync(ct);
-
-        var votes = await _db.Votes
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.CategoryId))
-            .OrderByDescending(x => x.UpdatedAtUtc)
-            .ToListAsync(ct);
-
-        return Ok(new AdminVotesDto(
-            votes.Count,
-            votes.Select(ToAdminVoteAuditRowDto).ToList()
-        ));
+        return Ok(await BuildAdminVotesDtoAsync(eventId, ct));
     }
 
     /// <summary>
@@ -947,26 +913,7 @@ public sealed class EventsController : ControllerBase
         var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
-        var categoryProposals = await _db.CategoryProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        var measureProposals = await _db.MeasureProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        return Ok(new AdminProposalsHistoryDto(
-            BuildProposalHistory(
-                categoryProposals.Select(ToCategoryProposalDto).ToList(),
-                proposal => proposal.Status),
-            BuildProposalHistory(
-                measureProposals.Select(ToMeasureProposalDto).ToList(),
-                proposal => proposal.Status)
-        ));
+        return Ok(await BuildAdminProposalsHistoryDtoAsync(eventId, ct));
     }
 
     /// <summary>
@@ -1120,20 +1067,8 @@ public sealed class EventsController : ControllerBase
         if (error is not null) return error;
 
         var normalizedStatus = NormalizeNomineeStatusFilter(status);
-        var query = _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId);
 
-        if (normalizedStatus is not null)
-        {
-            query = query.Where(x => x.Status == normalizedStatus);
-        }
-
-        var nominees = await query
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        return Ok(nominees.Select(ToNomineeDto).ToList());
+        return Ok(await LoadAdminNomineeDtosAsync(eventId, normalizedStatus, ct));
     }
 
     [HttpPost("{eventId}/admin/nominees/{nomineeId}/set-category")]
@@ -1713,6 +1648,150 @@ public sealed class EventsController : ControllerBase
             memberCount,
             assignmentCount
         );
+    }
+
+    private async Task<EventAdminBootstrapDto> BuildAdminBootstrapDtoAsync(string eventId, CancellationToken ct)
+    {
+        var eventsTask = LoadEventSummariesAsync(ct);
+        var stateTask = BuildAdminStateDtoAsync(eventId, ct);
+        var categoriesTask = LoadAdminCategoriesAsync(eventId, ct);
+        var nomineesTask = LoadAdminNomineeDtosAsync(eventId, null, ct);
+        var proposalsTask = BuildAdminProposalsHistoryDtoAsync(eventId, ct);
+        var votesTask = BuildAdminVotesDtoAsync(eventId, ct);
+        var membersTask = LoadAdminMembersAsync(eventId, ct);
+        var secretSantaTask = BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
+
+        await Task.WhenAll(
+            eventsTask,
+            stateTask,
+            categoriesTask,
+            nomineesTask,
+            proposalsTask,
+            votesTask,
+            membersTask,
+            secretSantaTask);
+
+        return new EventAdminBootstrapDto(
+            await eventsTask,
+            await stateTask,
+            await categoriesTask,
+            await nomineesTask,
+            await proposalsTask,
+            await votesTask,
+            await membersTask,
+            await secretSantaTask
+        );
+    }
+
+    private async Task<List<EventSummaryDto>> LoadEventSummariesAsync(CancellationToken ct)
+    {
+        var events = await _db.Events
+            .AsNoTracking()
+            .OrderByDescending(x => x.IsActive)
+            .ThenBy(x => x.Name)
+            .ToListAsync(ct);
+
+        return events.Select(ToEventSummaryDto).ToList();
+    }
+
+    private async Task<List<AwardCategoryDto>> LoadAdminCategoriesAsync(string eventId, CancellationToken ct)
+    {
+        var categories = await _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderBy(x => x.SortOrder)
+            .ThenBy(x => x.Name)
+            .ToListAsync(ct);
+
+        return categories.Select(ToAwardCategoryDto).ToList();
+    }
+
+    private async Task<List<NomineeDto>> LoadAdminNomineeDtosAsync(
+        string eventId,
+        string? normalizedStatus,
+        CancellationToken ct)
+    {
+        var query = _db.Nominees
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var nominees = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        return nominees.Select(ToNomineeDto).ToList();
+    }
+
+    private async Task<AdminProposalsHistoryDto> BuildAdminProposalsHistoryDtoAsync(string eventId, CancellationToken ct)
+    {
+        var categoryProposals = await _db.CategoryProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        var measureProposals = await _db.MeasureProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        return new AdminProposalsHistoryDto(
+            BuildProposalHistory(
+                categoryProposals.Select(ToCategoryProposalDto).ToList(),
+                proposal => proposal.Status),
+            BuildProposalHistory(
+                measureProposals.Select(ToMeasureProposalDto).ToList(),
+                proposal => proposal.Status)
+        );
+    }
+
+    private async Task<AdminVotesDto> BuildAdminVotesDtoAsync(string eventId, CancellationToken ct)
+    {
+        var categoryIds = await _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .Select(x => x.Id)
+            .ToListAsync(ct);
+
+        var votes = await _db.Votes
+            .AsNoTracking()
+            .Where(x => categoryIds.Contains(x.CategoryId))
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .ToListAsync(ct);
+
+        return new AdminVotesDto(
+            votes.Count,
+            votes.Select(ToAdminVoteAuditRowDto).ToList()
+        );
+    }
+
+    private async Task<List<PublicUserDto>> LoadAdminMembersAsync(string eventId, CancellationToken ct)
+    {
+        var members = await _db.EventMembers
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .ToListAsync(ct);
+
+        var userIds = members.Select(x => x.UserId).Distinct().ToList();
+        var users = await _db.Users
+            .AsNoTracking()
+            .Where(x => userIds.Contains(x.Id))
+            .ToListAsync(ct);
+
+        var usersById = users.ToDictionary(x => x.Id);
+
+        return members
+            .Where(member => usersById.ContainsKey(member.UserId))
+            .OrderByDescending(member => member.Role == EventRoles.Admin)
+            .ThenBy(member => GetUserName(usersById[member.UserId]))
+            .Select(member => ToPublicUserDto(usersById[member.UserId], member.Role == EventRoles.Admin))
+            .ToList();
     }
 
     private async Task<List<UserEntity>> LoadEventSecretSantaParticipantsAsync(string eventId, CancellationToken ct)

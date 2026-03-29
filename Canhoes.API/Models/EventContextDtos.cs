@@ -134,6 +134,22 @@ public record EventAdminStateDto(
 );
 
 /// <summary>
+/// Single bootstrap payload for the admin control center. It lets the frontend
+/// hydrate every admin tab from one event-scoped contract instead of composing
+/// multiple independent requests on first load.
+/// </summary>
+public record EventAdminBootstrapDto(
+    List<EventSummaryDto> Events,
+    EventAdminStateDto State,
+    List<AwardCategoryDto> Categories,
+    List<NomineeDto> Nominees,
+    AdminProposalsHistoryDto Proposals,
+    AdminVotesDto Votes,
+    List<PublicUserDto> Members,
+    EventAdminSecretSantaStateDto SecretSanta
+);
+
+/// <summary>
 /// Updates admin-managed visibility flags without changing the active phase.
 /// </summary>
 public record UpdateEventAdminStateRequest(
