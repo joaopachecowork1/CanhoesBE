@@ -14,6 +14,8 @@ internal static class DbSchema
 {
     public static async Task EnsureAsync(CanhoesDbContext db)
     {
+        await EnsureCriticalLegacyColumnsAsync(db);
+
         try
         {
             if (!db.Database.IsRelational()) return;
@@ -348,5 +350,37 @@ END
             // Don't block app startup in dev if schema step fails.
             // The next failing request will surface the real DB error.
         }
+    }
+
+    /// <summary>
+    /// Applies tiny, high-value schema fixes that must exist before the rest of
+    /// the startup bootstrap can safely query legacy tables through EF.
+    /// </summary>
+    private static async Task EnsureCriticalLegacyColumnsAsync(CanhoesDbContext db)
+    {
+        if (!db.Database.IsRelational()) return;
+
+        var provider = db.Database.ProviderName ?? string.Empty;
+        if (!provider.Contains("SqlServer", StringComparison.OrdinalIgnoreCase)) return;
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NULL;
+  UPDATE dbo.CanhoesEventState SET ModuleVisibilityJson = '{}' WHERE ModuleVisibilityJson IS NULL;
+  ALTER TABLE dbo.CanhoesEventState ALTER COLUMN ModuleVisibilityJson NVARCHAR(MAX) NOT NULL;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM sys.default_constraints dc
+    INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
+    INNER JOIN sys.tables t ON t.object_id = c.object_id
+    WHERE t.name = 'CanhoesEventState' AND c.name = 'ModuleVisibilityJson'
+  )
+    ALTER TABLE dbo.CanhoesEventState
+      ADD CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}') FOR ModuleVisibilityJson;
+END
+");
     }
 }

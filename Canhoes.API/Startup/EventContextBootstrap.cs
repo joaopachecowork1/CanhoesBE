@@ -74,7 +74,15 @@ internal static class EventContextBootstrap
             db.SaveChanges();
         }
 
-        var legacyState = db.CanhoesEventState.FirstOrDefault();
+        // Read only the legacy fields needed for phase sync so startup does not
+        // depend on every newer column already existing in older databases.
+        var legacyState = db.CanhoesEventState
+            .Select(x => new
+            {
+                x.Phase,
+                x.ResultsVisible
+            })
+            .FirstOrDefault();
         if (legacyState is not null)
         {
             SyncLegacyPhaseState(db, legacyState.Phase, legacyState.ResultsVisible);
