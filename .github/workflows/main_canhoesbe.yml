@@ -1,53 +1,72 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy ASP.Net Core app to Azure Web App - CanhoesBE
+name: Build and deploy ASP.NET Core app to Azure Web App - CanhoesBE
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
+    paths:
+      - "Canhoes.API/**"
+      - "Canhoes.BL/**"
+      - "Canhoes.Database/**"
+      - "Canhoes.Database.Sql/**"
+      - "Canhoes.Domain/**"
+      - "Canhoes.Infrastructure/**"
+      - "Canhoes.Tests/**"
+      - "Canhoes.slnx"
+      - ".github/workflows/main_canhoesbe.yml"
+
+env:
+  PROJECT_PATH: ./Canhoes.API/Canhoes.Api.csproj
+  PUBLISH_PATH: ${{ github.workspace }}/published-api
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: read #This is required for actions/checkout
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up .NET Core
+      - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: "10.0.x"
 
-      - name: Build API
-        run: dotnet build ./Canhoes.Api/Canhoes.Api.csproj --configuration Release
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT_PATH }}
 
-      - name: Publish API
-        run: dotnet publish ./Canhoes.Api/Canhoes.Api.csproj -c Release -o "${{env.DOTNET_ROOT}}/myapp"
+      - name: Build
+        run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
 
-      - name: Upload artifact for deployment job
+      - name: Publish
+        run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output "${{ env.PUBLISH_PATH }}"
+
+      - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
-          name: .net-app
-          path: ${{env.DOTNET_ROOT}}/myapp
+          name: canhoes-api
+          path: ${{ env.PUBLISH_PATH }}
 
   deploy:
     runs-on: windows-latest
     needs: build
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
+      contents: read
+      id-token: write
 
     steps:
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
-          name: .net-app
-      
+          name: canhoes-api
+          path: ${{ env.PUBLISH_PATH }}
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -59,7 +78,6 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'CanhoesBE'
-          slot-name: 'Production'
-          package: .
-          
+          app-name: "CanhoesBE"
+          slot-name: "Production"
+          package: ${{ env.PUBLISH_PATH }}
