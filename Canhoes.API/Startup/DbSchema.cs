@@ -473,5 +473,31 @@ BEGIN
     ADD CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{{}}') FOR ModuleVisibilityJson;
 END
 ");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.Nominees', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NULL
+BEGIN
+  ALTER TABLE dbo.Nominees ADD SubmissionKind NVARCHAR(32) NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.Nominees', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NOT NULL
+BEGIN
+  UPDATE dbo.Nominees
+  SET SubmissionKind = CASE WHEN ImageUrl IS NULL THEN 'nominees' ELSE 'stickers' END
+  WHERE SubmissionKind IS NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.Nominees', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NOT NULL
+BEGIN
+  ALTER TABLE dbo.Nominees ALTER COLUMN SubmissionKind NVARCHAR(32) NOT NULL;
+END
+");
     }
 }
