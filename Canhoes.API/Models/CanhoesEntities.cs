@@ -54,6 +54,9 @@ public sealed class NomineeEntity
     [Required]
     public string Title { get; set; } = string.Empty;
 
+    [Required]
+    public string SubmissionKind { get; set; } = "nominees";
+
     // Stored as a relative URL served by the API (e.g. /uploads/canhoes/<file>)
     public string? ImageUrl { get; set; }
 
@@ -171,7 +174,10 @@ public sealed class UserVoteEntity
 public sealed class CanhoesEventStateEntity
 {
     [Key]
-    public int Id { get; set; } = 1;
+    public int Id { get; set; }
+
+    [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
 
     // nominations | voting | locked | gala
     [Required]

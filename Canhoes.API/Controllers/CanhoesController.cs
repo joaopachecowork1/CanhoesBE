@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Canhoes.Api.Access;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
@@ -14,9 +15,19 @@ namespace Canhoes.Api.Controllers;
 [Authorize]
 public partial class CanhoesController : ControllerBase
 {
-    private const string DefaultEventId = EventContextDefaults.DefaultEventId;
     private readonly CanhoesDbContext _db;
     private readonly IWebHostEnvironment _env;
+
+    private sealed record ActiveEventAccessContext(
+        string EventId,
+        Guid UserId,
+        bool IsAdmin,
+        bool IsMember,
+        EventModuleAccessSnapshot ModuleAccess)
+    {
+        public bool CanAccess => IsAdmin || IsMember;
+        public bool CanManage => IsAdmin;
+    }
 
     public CanhoesController(CanhoesDbContext db, IWebHostEnvironment env)
     {
@@ -40,34 +51,36 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<AdminProposalsHistoryDto>> AdminProposals(CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
         var catsPending = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == DefaultEventId && p.Status == "pending")
+            .Where(p => p.EventId == activeEventId && p.Status == "pending")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var catsApproved = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == DefaultEventId && p.Status == "approved")
+            .Where(p => p.EventId == activeEventId && p.Status == "approved")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var catsRejected = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == DefaultEventId && p.Status == "rejected")
+            .Where(p => p.EventId == activeEventId && p.Status == "rejected")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measApproved = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == DefaultEventId && p.Status == "approved")
+            .Where(p => p.EventId == activeEventId && p.Status == "approved")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measPending = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == DefaultEventId && p.Status == "pending")
+            .Where(p => p.EventId == activeEventId && p.Status == "pending")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measRejected = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == DefaultEventId && p.Status == "rejected")
+            .Where(p => p.EventId == activeEventId && p.Status == "rejected")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
@@ -92,32 +105,48 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("state")]
     public async Task<ActionResult<CanhoesEventStateDto>> GetState(CancellationToken ct)
     {
-        var state = await _db.CanhoesEventState.AsNoTracking().FirstAsync(ct);
+        var (access, error) = await RequireActiveEventAccessAsync(ct);
+        if (error is not null) return error;
+
+        var state = access.ModuleAccess.State;
         return new CanhoesEventStateDto(state.Phase, state.NominationsVisible, state.ResultsVisible);
     }
 
     [HttpGet("categories")]
     public async Task<ActionResult<List<AwardCategoryDto>>> GetCategories(CancellationToken ct)
     {
+        var (access, error) = await RequireActiveEventAccessAsync(ct);
+        if (error is not null) return error;
+
         var cats = await _db.AwardCategories.AsNoTracking()
-            .Where(c => c.EventId == DefaultEventId && c.IsActive)
+            .Where(c => c.EventId == access.EventId && c.IsActive)
             .OrderBy(c => c.SortOrder)
             .ToListAsync(ct);
         return cats.Select(ToAwardCategoryDto).ToList();
     }
 
     [HttpGet("nominees")]
-    public async Task<ActionResult<List<NomineeDto>>> GetNominees([FromQuery] string? categoryId, CancellationToken ct)
+    public async Task<ActionResult<List<NomineeDto>>> GetNominees(
+        [FromQuery] string? categoryId,
+        [FromQuery] string? kind,
+        CancellationToken ct)
     {
-        var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId);
+        var nomineeKind = NormalizeNomineeKind(kind);
+        var (access, error) = await RequireActiveEventAccessAsync(
+            ct,
+            moduleKey: GetNomineeModuleKey(nomineeKind));
+        if (error is not null) return error;
+
+        var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == access.EventId);
         if (!string.IsNullOrWhiteSpace(categoryId)) q = q.Where(n => n.CategoryId == categoryId);
+        q = q.Where(n => n.SubmissionKind == nomineeKind);
 
         // Public list: show approved nominees. If nominations are visible, show approved + pending.
-        var state = await _db.CanhoesEventState.AsNoTracking().FirstAsync(ct);
+        var state = access.ModuleAccess.State;
         if (!state.NominationsVisible)
             q = q.Where(n => n.Status == "approved");
         // Never show rejected to non-admins.
-        if (!IsAdmin()) q = q.Where(n => n.Status != "rejected");
+        if (!access.IsAdmin) q = q.Where(n => n.Status != "rejected");
 
         var list = await q.OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
         return list.Select(ToNomineeDto).ToList();
@@ -126,7 +155,10 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("measures")]
     public async Task<ActionResult<List<GalaMeasureDto>>> GetMeasures(CancellationToken ct)
     {
-        var list = await _db.Measures.AsNoTracking().Where(m => m.EventId == DefaultEventId && m.IsActive)
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Measures);
+        if (error is not null) return error;
+
+        var list = await _db.Measures.AsNoTracking().Where(m => m.EventId == access.EventId && m.IsActive)
             .OrderByDescending(m => m.CreatedAtUtc).ToListAsync(ct);
         return list.Select(m => new GalaMeasureDto(m.Id, m.Text, m.IsActive, new DateTimeOffset(m.CreatedAtUtc, TimeSpan.Zero))).ToList();
     }
@@ -134,13 +166,17 @@ public partial class CanhoesController : ControllerBase
     [HttpPost("nominees")]
     public async Task<ActionResult<NomineeDto>> CreateNominee([FromBody] CreateNomineeRequest req, CancellationToken ct)
     {
+        var nomineeKind = NormalizeNomineeKind(req.Kind);
+        var (access, error) = await RequireActiveEventAccessAsync(
+            ct,
+            moduleKey: GetNomineeModuleKey(nomineeKind));
+        if (error is not null) return error;
+
         // Very simple rules:
         // - Anyone can submit while phase == nominations
         // - Starts as pending
-        var state = await _db.CanhoesEventState.FirstAsync(ct);
+        var state = access.ModuleAccess.State;
         if (state.Phase != "nominations") return BadRequest("Nominations are closed.");
-
-        var userId = HttpContext.GetUserId();
 
         // NOTE: TargetUserId is optional (legacy field) and is not persisted.
         // Keep it nullable so older frontends don't fail model-binding.
@@ -148,10 +184,11 @@ public partial class CanhoesController : ControllerBase
         var nominee = new NomineeEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
+            EventId = access.EventId,
             CategoryId = string.IsNullOrWhiteSpace(req.CategoryId) ? null : req.CategoryId,
+            SubmissionKind = nomineeKind,
             Title = req.Title,
-            SubmittedByUserId = userId,
+            SubmittedByUserId = access.UserId,
             Status = "pending",
             CreatedAtUtc = DateTime.UtcNow
         };
@@ -165,17 +202,18 @@ public partial class CanhoesController : ControllerBase
     [HttpPost("categories/proposals")]
     public async Task<ActionResult<CategoryProposalDto>> CreateCategoryProposal([FromBody] CreateCategoryProposalRequest req, CancellationToken ct)
     {
-        var state = await _db.CanhoesEventState.FirstAsync(ct);
-        if (state.Phase != "nominations") return BadRequest("Category proposals are closed.");
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Categories);
+        if (error is not null) return error;
 
-        var userId = HttpContext.GetUserId();
+        var state = access.ModuleAccess.State;
+        if (state.Phase != "nominations") return BadRequest("Category proposals are closed.");
         var p = new CategoryProposalEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
+            EventId = access.EventId,
             Name = req.Name.Trim(),
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
-            ProposedByUserId = userId,
+            ProposedByUserId = access.UserId,
             Status = "pending",
             CreatedAtUtc = DateTime.UtcNow
         };
@@ -187,16 +225,17 @@ public partial class CanhoesController : ControllerBase
     [HttpPost("measures/proposals")]
     public async Task<ActionResult<MeasureProposalDto>> CreateMeasureProposal([FromBody] CreateMeasureProposalRequest req, CancellationToken ct)
     {
-        var state = await _db.CanhoesEventState.FirstAsync(ct);
-        if (state.Phase != "nominations") return BadRequest("Measure proposals are closed.");
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Measures);
+        if (error is not null) return error;
 
-        var userId = HttpContext.GetUserId();
+        var state = access.ModuleAccess.State;
+        if (state.Phase != "nominations") return BadRequest("Measure proposals are closed.");
         var p = new MeasureProposalEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
+            EventId = access.EventId,
             Text = req.Text.Trim(),
-            ProposedByUserId = userId,
+            ProposedByUserId = access.UserId,
             Status = "pending",
             CreatedAtUtc = DateTime.UtcNow
         };
@@ -209,8 +248,14 @@ public partial class CanhoesController : ControllerBase
     [RequestSizeLimit(15_000_000)]
     public async Task<ActionResult<NomineeDto>> UploadNomineeImage([FromRoute] string id, IFormFile file, CancellationToken ct)
     {
-        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id && n.EventId == DefaultEventId, ct);
+        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id, ct);
         if (nominee is null) return NotFound();
+
+        var (access, error) = await RequireActiveEventAccessAsync(
+            ct,
+            moduleKey: GetNomineeModuleKey(nominee.SubmissionKind));
+        if (error is not null) return error;
+        if (nominee.EventId != access.EventId) return NotFound();
 
         if (file.Length <= 0) return BadRequest("Empty file");
 
@@ -236,30 +281,33 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("my-votes")]
     public async Task<ActionResult<List<VoteDto>>> GetMyVotes(CancellationToken ct)
     {
-        var userId = HttpContext.GetUserId();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Voting);
+        if (error is not null) return error;
+
         var categoryIds = await _db.AwardCategories.AsNoTracking()
-            .Where(c => c.EventId == DefaultEventId)
+            .Where(c => c.EventId == access.EventId)
             .Select(c => c.Id)
             .ToListAsync(ct);
-        var votes = await _db.Votes.AsNoTracking().Where(v => v.UserId == userId && categoryIds.Contains(v.CategoryId)).ToListAsync(ct);
-        return votes.Select(v => new VoteDto(v.Id, v.CategoryId, v.NomineeId, userId, v.UpdatedAtUtc)).ToList();
+        var votes = await _db.Votes.AsNoTracking().Where(v => v.UserId == access.UserId && categoryIds.Contains(v.CategoryId)).ToListAsync(ct);
+        return votes.Select(v => new VoteDto(v.Id, v.CategoryId, v.NomineeId, access.UserId, v.UpdatedAtUtc)).ToList();
     }
 
     [HttpPost("vote")]
     public async Task<ActionResult<VoteDto>> CastVote([FromBody] CastVoteRequest req, CancellationToken ct)
     {
-        var state = await _db.CanhoesEventState.FirstAsync(ct);
-        if (state.Phase != "voting") return BadRequest("Voting is closed.");
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Voting);
+        if (error is not null) return error;
 
-        var userId = HttpContext.GetUserId();
+        var state = access.ModuleAccess.State;
+        if (state.Phase != "voting") return BadRequest("Voting is closed.");
 
         // Validate nominee exists and is approved
         var nominee = await _db.Nominees.AsNoTracking()
-            .FirstOrDefaultAsync(n => n.Id == req.NomineeId && n.EventId == DefaultEventId && n.CategoryId == req.CategoryId, ct);
+            .FirstOrDefaultAsync(n => n.Id == req.NomineeId && n.EventId == access.EventId && n.CategoryId == req.CategoryId, ct);
         if (nominee is null || nominee.Status != "approved") return BadRequest("Invalid nominee.");
 
         // Upsert (unique per category per user)
-        var existing = await _db.Votes.FirstOrDefaultAsync(v => v.CategoryId == req.CategoryId && v.UserId == userId, ct);
+        var existing = await _db.Votes.FirstOrDefaultAsync(v => v.CategoryId == req.CategoryId && v.UserId == access.UserId, ct);
         if (existing is null)
         {
             existing = new VoteEntity
@@ -267,7 +315,7 @@ public partial class CanhoesController : ControllerBase
                 Id = Guid.NewGuid().ToString(),
                 CategoryId = req.CategoryId,
                 NomineeId = req.NomineeId,
-                UserId = userId,
+                UserId = access.UserId,
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow
             };
@@ -280,20 +328,23 @@ public partial class CanhoesController : ControllerBase
         }
 
         await _db.SaveChangesAsync(ct);
-        return new VoteDto(existing.Id, existing.CategoryId, existing.NomineeId, userId, existing.UpdatedAtUtc);
+        return new VoteDto(existing.Id, existing.CategoryId, existing.NomineeId, access.UserId, existing.UpdatedAtUtc);
     }
 
     [HttpGet("results")]
     public async Task<ActionResult<List<CanhoesCategoryResultDto>>> GetResults(CancellationToken ct)
     {
-        var state = await _db.CanhoesEventState.AsNoTracking().FirstAsync(ct);
-        if (!(state.ResultsVisible || state.Phase == "gala" || IsAdmin())) return Forbid();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Gala);
+        if (error is not null) return error;
+
+        var state = access.ModuleAccess.State;
+        if (!(state.ResultsVisible || state.Phase == "gala" || access.IsAdmin)) return Forbid();
 
         var categories = await _db.AwardCategories.AsNoTracking().Where(c => c.IsActive)
-            .Where(c => c.EventId == DefaultEventId)
+            .Where(c => c.EventId == access.EventId)
             .OrderBy(c => c.SortOrder).ToListAsync(ct);
 
-        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId && n.Status == "approved" && n.CategoryId != null).ToListAsync(ct);
+        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.EventId == access.EventId && n.Status == "approved" && n.CategoryId != null).ToListAsync(ct);
         var votes = await _db.Votes.AsNoTracking().ToListAsync(ct);
 
         var result = new List<CanhoesCategoryResultDto>();
@@ -332,7 +383,16 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("members")]
     public async Task<ActionResult<List<PublicUserDto>>> GetMembers(CancellationToken ct)
     {
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
+        if (error is not null) return error;
+
+        var memberIds = await _db.EventMembers.AsNoTracking()
+            .Where(x => x.EventId == access.EventId)
+            .Select(x => x.UserId)
+            .ToListAsync(ct);
+
         var list = await _db.Users.AsNoTracking()
+            .Where(u => memberIds.Contains(u.Id))
             .OrderBy(u => u.DisplayName)
             .ToListAsync(ct);
         return list.Select(u => new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin)).ToList();
@@ -341,8 +401,11 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("wishlist")]
     public async Task<ActionResult<List<WishlistItemDto>>> GetWishlist(CancellationToken ct)
     {
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
+        if (error is not null) return error;
+
         var items = await _db.WishlistItems.AsNoTracking()
-            .Where(x => x.EventId == DefaultEventId)
+            .Where(x => x.EventId == access.EventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
             .ToListAsync(ct);
         return items.Select(x => new WishlistItemDto(
@@ -355,14 +418,15 @@ public partial class CanhoesController : ControllerBase
     [HttpPost("wishlist")]
     public async Task<ActionResult<WishlistItemDto>> CreateWishlistItem([FromBody] CreateWishlistItemRequest req, CancellationToken ct)
     {
-        var userId = HttpContext.GetUserId();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
+        if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(req.Title)) return BadRequest("Title is required.");
 
         var item = new WishlistItemEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
-            UserId = userId,
+            EventId = access.EventId,
+            UserId = access.UserId,
             Title = req.Title.Trim(),
             Url = string.IsNullOrWhiteSpace(req.Url) ? null : req.Url.Trim(),
             Notes = string.IsNullOrWhiteSpace(req.Notes) ? null : req.Notes.Trim(),
@@ -381,10 +445,12 @@ public partial class CanhoesController : ControllerBase
     [RequestSizeLimit(10_000_000)] // 10MB
     public async Task<IActionResult> UploadWishlistImage([FromRoute] string id, IFormFile file, CancellationToken ct)
     {
-        var userId = HttpContext.GetUserId();
-        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
+        if (error is not null) return error;
+
+        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id && x.EventId == access.EventId, ct);
         if (item is null) return NotFound();
-        if (item.UserId != userId && !IsAdmin()) return Forbid();
+        if (item.UserId != access.UserId && !access.IsAdmin) return Forbid();
 
         if (file is null || file.Length == 0) return BadRequest("File is required.");
         var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
@@ -409,10 +475,12 @@ public partial class CanhoesController : ControllerBase
     [HttpDelete("wishlist/{id}")]
     public async Task<IActionResult> DeleteWishlistItem([FromRoute] string id, CancellationToken ct)
     {
-        var userId = HttpContext.GetUserId();
-        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
+        if (error is not null) return error;
+
+        var item = await _db.WishlistItems.FirstOrDefaultAsync(x => x.Id == id && x.EventId == access.EventId, ct);
         if (item is null) return NotFound();
-        if (item.UserId != userId && !IsAdmin()) return Forbid();
+        if (item.UserId != access.UserId && !access.IsAdmin) return Forbid();
 
         _db.WishlistItems.Remove(item);
         await _db.SaveChangesAsync(ct);
@@ -586,10 +654,12 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<AwardCategoryDto>>> AdminGetCategories(CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
         var cats = await _db.AwardCategories
             .AsNoTracking()
-            .Where(x => x.EventId == DefaultEventId)
+            .Where(x => x.EventId == activeEventId)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
             .ToListAsync(ct);
@@ -609,8 +679,10 @@ public partial class CanhoesController : ControllerBase
     {
         if (!IsAdmin()) return Forbid();
         if (string.IsNullOrWhiteSpace(id)) return BadRequest("id is required.");
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
-        var cat = await _db.AwardCategories.SingleOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var cat = await _db.AwardCategories.SingleOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (cat is null) return NotFound();
 
         if (!string.IsNullOrWhiteSpace(req.Name)) cat.Name = req.Name.Trim();
@@ -636,16 +708,18 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<AwardCategoryDto>> AdminCreateCategory([FromBody] CreateAwardCategoryRequest req, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
         if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest("Name is required.");
         if (!Enum.TryParse<AwardCategoryKind>(req.Kind, ignoreCase: true, out var kind))
             return BadRequest("Invalid category kind.");
 
-        var maxSort = await _db.AwardCategories.Where(c => c.EventId == DefaultEventId).MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
+        var maxSort = await _db.AwardCategories.Where(c => c.EventId == activeEventId).MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
         var cat = new AwardCategoryEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
+            EventId = activeEventId,
             Name = req.Name.Trim(),
             SortOrder = req.SortOrder ?? (maxSort + 1),
             Kind = kind,
@@ -667,13 +741,15 @@ public partial class CanhoesController : ControllerBase
     [HttpGet("my-user-votes")]
     public async Task<ActionResult<List<UserVoteDto>>> GetMyUserVotes(CancellationToken ct)
     {
-        var userId = HttpContext.GetUserId();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Voting);
+        if (error is not null) return error;
+
         var categoryIds = await _db.AwardCategories.AsNoTracking()
-            .Where(c => c.EventId == DefaultEventId)
+            .Where(c => c.EventId == access.EventId)
             .Select(c => c.Id)
             .ToListAsync(ct);
         var list = await _db.UserVotes.AsNoTracking()
-            .Where(v => v.VoterUserId == userId && categoryIds.Contains(v.CategoryId))
+            .Where(v => v.VoterUserId == access.UserId && categoryIds.Contains(v.CategoryId))
             .OrderByDescending(v => v.UpdatedAtUtc)
             .ToListAsync(ct);
 
@@ -683,25 +759,26 @@ public partial class CanhoesController : ControllerBase
     [HttpPost("user-vote")]
     public async Task<ActionResult<UserVoteDto>> CastUserVote([FromBody] CastUserVoteRequest req, CancellationToken ct)
     {
-        var state = await _db.CanhoesEventState.FirstAsync(ct);
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Voting);
+        if (error is not null) return error;
+
+        var state = access.ModuleAccess.State;
         if (state.Phase != "voting") return BadRequest("Voting is closed.");
 
-        var userId = HttpContext.GetUserId();
-
-        var cat = await _db.AwardCategories.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CategoryId && c.EventId == DefaultEventId, ct);
+        var cat = await _db.AwardCategories.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.CategoryId && c.EventId == access.EventId, ct);
         if (cat is null || cat.Kind != AwardCategoryKind.UserVote) return BadRequest("Invalid category.");
 
         var targetExists = await _db.Users.AsNoTracking().AnyAsync(u => u.Id == req.TargetUserId, ct);
         if (!targetExists) return BadRequest("Invalid target user.");
 
-        var existing = await _db.UserVotes.FirstOrDefaultAsync(v => v.CategoryId == req.CategoryId && v.VoterUserId == userId, ct);
+        var existing = await _db.UserVotes.FirstOrDefaultAsync(v => v.CategoryId == req.CategoryId && v.VoterUserId == access.UserId, ct);
         if (existing is null)
         {
             existing = new UserVoteEntity
             {
                 Id = Guid.NewGuid().ToString(),
                 CategoryId = req.CategoryId,
-                VoterUserId = userId,
+                VoterUserId = access.UserId,
                 TargetUserId = req.TargetUserId,
                 UpdatedAtUtc = DateTime.UtcNow
             };
@@ -721,9 +798,11 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<PendingAdminDto>> AdminPending(CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId && n.Status == "pending").OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
-        var cats = await _db.CategoryProposals.AsNoTracking().Where(p => p.EventId == DefaultEventId && p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
-        var meas = await _db.MeasureProposals.AsNoTracking().Where(p => p.EventId == DefaultEventId && p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var nominees = await _db.Nominees.AsNoTracking().Where(n => n.EventId == activeEventId && n.Status == "pending").OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
+        var cats = await _db.CategoryProposals.AsNoTracking().Where(p => p.EventId == activeEventId && p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
+        var meas = await _db.MeasureProposals.AsNoTracking().Where(p => p.EventId == activeEventId && p.Status == "pending").OrderByDescending(p => p.CreatedAtUtc).ToListAsync(ct);
 
         return new PendingAdminDto(
             nominees.Select(ToNomineeDto).ToList(),
@@ -736,7 +815,9 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<NomineeDto>> AdminSetNomineeCategory([FromRoute] string id, [FromBody] SetNomineeCategoryRequest req, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id && n.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var nominee = await _db.Nominees.FirstOrDefaultAsync(n => n.Id == id && n.EventId == activeEventId, ct);
         if (nominee is null) return NotFound();
         nominee.CategoryId = string.IsNullOrWhiteSpace(req.CategoryId) ? null : req.CategoryId;
         await _db.SaveChangesAsync(ct);
@@ -747,15 +828,17 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<AwardCategoryDto>> ApproveCategoryProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (p is null) return NotFound();
         p.Status = "approved";
 
-        var maxSort = await _db.AwardCategories.Where(c => c.EventId == DefaultEventId).MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
+        var maxSort = await _db.AwardCategories.Where(c => c.EventId == activeEventId).MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
         var cat = new AwardCategoryEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
+            EventId = activeEventId,
             Name = p.Name,
             SortOrder = maxSort + 1,
             IsActive = true
@@ -769,7 +852,9 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<CategoryProposalDto>> RejectCategoryProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var p = await _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (p is null) return NotFound();
         p.Status = "rejected";
         await _db.SaveChangesAsync(ct);
@@ -780,13 +865,15 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<GalaMeasureDto>> ApproveMeasureProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (p is null) return NotFound();
         p.Status = "approved";
         var m = new GalaMeasureEntity
         {
             Id = Guid.NewGuid().ToString(),
-            EventId = DefaultEventId,
+            EventId = activeEventId,
             Text = p.Text,
             IsActive = true,
             CreatedAtUtc = DateTime.UtcNow
@@ -802,13 +889,15 @@ public partial class CanhoesController : ControllerBase
         CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
         var normalized = string.IsNullOrWhiteSpace(status)
             ? "all"
             : status.Trim().ToLowerInvariant();
 
         IQueryable<MeasureProposalEntity> q = _db.MeasureProposals.AsNoTracking();
-        q = q.Where(p => p.EventId == DefaultEventId);
+        q = q.Where(p => p.EventId == activeEventId);
         if (normalized is "pending" or "approved" or "rejected")
         {
             q = q.Where(p => p.Status == normalized);
@@ -830,8 +919,10 @@ public partial class CanhoesController : ControllerBase
     {
         if (!IsAdmin()) return Forbid();
         if (string.IsNullOrWhiteSpace(id)) return BadRequest("id is required.");
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (p is null) return NotFound();
 
         if (!string.IsNullOrWhiteSpace(req.Text))
@@ -858,8 +949,10 @@ public partial class CanhoesController : ControllerBase
     {
         if (!IsAdmin()) return Forbid();
         if (string.IsNullOrWhiteSpace(id)) return BadRequest("id is required.");
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
 
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (p is null) return NotFound();
 
         _db.MeasureProposals.Remove(p);
@@ -871,7 +964,9 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<MeasureProposalDto>> RejectMeasureProposal([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var p = await _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (p is null) return NotFound();
         p.Status = "rejected";
         await _db.SaveChangesAsync(ct);
@@ -882,8 +977,10 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<object>> AdminVotes(CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
         var categoryIds = await _db.AwardCategories.AsNoTracking()
-            .Where(c => c.EventId == DefaultEventId)
+            .Where(c => c.EventId == activeEventId)
             .Select(c => c.Id)
             .ToListAsync(ct);
         var votes = await _db.Votes.AsNoTracking()
@@ -901,10 +998,12 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<List<NomineeDto>>> AdminGetAllNominees([FromQuery] string? status, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == DefaultEventId);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == activeEventId);
         if (!string.IsNullOrWhiteSpace(status))
             q = q.Where(n => n.Status == status);
-        var list = await q.Where(n => n.EventId == DefaultEventId).OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
+        var list = await q.OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
         return list.Select(ToNomineeDto).ToList();
     }
 
@@ -912,7 +1011,9 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<NomineeDto>> Approve([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (n is null) return NotFound();
         if (string.IsNullOrWhiteSpace(n.CategoryId)) return BadRequest("Nominee must have a category before approval.");
         n.Status = "approved";
@@ -924,7 +1025,9 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<NomineeDto>> Reject([FromRoute] string id, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id && x.EventId == DefaultEventId, ct);
+        var (activeEventId, error) = await RequireActiveEventIdAsync(ct);
+        if (error is not null) return error;
+        var n = await _db.Nominees.FirstOrDefaultAsync(x => x.Id == id && x.EventId == activeEventId, ct);
         if (n is null) return NotFound();
         n.Status = "rejected";
         await _db.SaveChangesAsync(ct);
@@ -935,13 +1038,85 @@ public partial class CanhoesController : ControllerBase
     public async Task<ActionResult<CanhoesEventStateDto>> UpdateState([FromBody] CanhoesEventStateDto dto, CancellationToken ct)
     {
         if (!IsAdmin()) return Forbid();
-        var state = await _db.CanhoesEventState.FirstAsync(ct);
+        var activeEventId = await ResolveActiveEventIdAsync(ct);
+        if (activeEventId is null) return NotFound();
+
+        var state = await EventModuleAccessEvaluator.GetOrCreateEventStateAsync(_db, activeEventId, ct);
         state.Phase = dto.Phase;
         state.NominationsVisible = dto.NominationsVisible;
         state.ResultsVisible = dto.ResultsVisible;
         await _db.SaveChangesAsync(ct);
-        EventContextBootstrap.SyncLegacyPhaseState(_db, state.Phase, state.ResultsVisible);
+        EventContextBootstrap.SyncLegacyPhaseState(_db, activeEventId, state.Phase, state.ResultsVisible);
         return new CanhoesEventStateDto(state.Phase, state.NominationsVisible, state.ResultsVisible);
+    }
+
+    private async Task<(ActiveEventAccessContext Access, ActionResult? Error)> RequireActiveEventAccessAsync(
+        CancellationToken ct,
+        bool requireManage = false,
+        EventModuleKey? moduleKey = null)
+    {
+        var activeEventId = await ResolveActiveEventIdAsync(ct);
+        if (activeEventId is null) return (default!, NotFound());
+
+        var userId = HttpContext.GetUserId();
+        var isAdmin = HttpContext.IsAdmin();
+        var isMember = await _db.EventMembers
+            .AsNoTracking()
+            .AnyAsync(x => x.EventId == activeEventId && x.UserId == userId, ct);
+
+        var access = new ActiveEventAccessContext(
+            activeEventId,
+            userId,
+            isAdmin,
+            isMember,
+            await EventModuleAccessEvaluator.EvaluateAsync(_db, activeEventId, userId, isAdmin, ct));
+
+        if (requireManage ? !access.CanManage : !access.CanAccess)
+        {
+            return (default!, Forbid());
+        }
+
+        if (moduleKey.HasValue && !EventModuleAccessEvaluator.IsModuleEnabled(access.ModuleAccess.EffectiveModules, moduleKey.Value))
+        {
+            return (default!, Forbid());
+        }
+
+        return (access, null);
+    }
+
+    private Task<string?> ResolveActiveEventIdAsync(CancellationToken ct) =>
+        _db.Events
+            .AsNoTracking()
+            .OrderByDescending(x => x.IsActive)
+            .ThenBy(x => x.Name)
+            .Select(x => x.Id)
+            .FirstOrDefaultAsync(ct);
+
+    private async Task<(string EventId, ActionResult? Error)> RequireActiveEventIdAsync(CancellationToken ct)
+    {
+        var activeEventId = await ResolveActiveEventIdAsync(ct);
+        if (activeEventId is null)
+        {
+            return (string.Empty, NotFound());
+        }
+
+        return (activeEventId, null);
+    }
+
+    private static string NormalizeNomineeKind(string? kind)
+    {
+        return kind?.Trim().ToLowerInvariant() switch
+        {
+            "stickers" => "stickers",
+            _ => "nominees"
+        };
+    }
+
+    private static EventModuleKey GetNomineeModuleKey(string? nomineeKind)
+    {
+        return string.Equals(NormalizeNomineeKind(nomineeKind), "stickers", StringComparison.Ordinal)
+            ? EventModuleKey.Stickers
+            : EventModuleKey.Nominees;
     }
 
     private static NomineeDto ToNomineeDto(NomineeEntity n) =>

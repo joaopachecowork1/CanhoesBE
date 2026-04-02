@@ -139,6 +139,7 @@ BEGIN
         EventId NVARCHAR(64) NOT NULL CONSTRAINT DF_Nominees_EventId DEFAULT('canhoes-do-ano'),
         CategoryId NVARCHAR(64) NULL,
         Title NVARCHAR(512) NOT NULL,
+        SubmissionKind NVARCHAR(32) NOT NULL CONSTRAINT DF_Nominees_SubmissionKind DEFAULT('nominees'),
         ImageUrl NVARCHAR(1024) NULL,
         SubmittedByUserId UNIQUEIDENTIFIER NOT NULL,
         Status NVARCHAR(32) NOT NULL CONSTRAINT DF_Nominees_Status DEFAULT('pending'),
@@ -165,6 +166,26 @@ IF COL_LENGTH('dbo.Nominees', 'EventId') IS NOT NULL
          AND is_nullable = 1
    )
     ALTER TABLE dbo.Nominees ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+GO
+
+IF COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NULL
+    ALTER TABLE dbo.Nominees ADD SubmissionKind NVARCHAR(32) NULL;
+GO
+
+IF COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NOT NULL
+    EXEC(N'UPDATE dbo.Nominees SET SubmissionKind = CASE WHEN ImageUrl IS NULL THEN ''nominees'' ELSE ''stickers'' END WHERE SubmissionKind IS NULL;');
+GO
+
+IF COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NOT NULL
+   AND EXISTS
+   (
+       SELECT 1
+       FROM sys.columns
+       WHERE object_id = OBJECT_ID('dbo.Nominees')
+         AND name = 'SubmissionKind'
+         AND is_nullable = 1
+   )
+    ALTER TABLE dbo.Nominees ALTER COLUMN SubmissionKind NVARCHAR(32) NOT NULL;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Nominees_CategoryId_Status' AND object_id = OBJECT_ID('dbo.Nominees'))
@@ -333,6 +354,7 @@ BEGIN
     CREATE TABLE dbo.CanhoesEventState
     (
         Id INT NOT NULL PRIMARY KEY,
+        EventId NVARCHAR(64) NOT NULL CONSTRAINT DF_CanhoesEventState_EventId DEFAULT('canhoes-do-ano'),
         Phase NVARCHAR(32) NOT NULL,
         NominationsVisible BIT NOT NULL CONSTRAINT DF_CanhoesEventState_NominationsVisible DEFAULT(1),
         ResultsVisible BIT NOT NULL CONSTRAINT DF_CanhoesEventState_ResultsVisible DEFAULT(0),
@@ -346,6 +368,30 @@ BEGIN
     ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NOT NULL
         CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{}');
 END
+GO
+
+IF COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NULL
+    ALTER TABLE dbo.CanhoesEventState ADD EventId NVARCHAR(64) NULL;
+GO
+
+IF COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NOT NULL
+    EXEC(N'UPDATE dbo.CanhoesEventState SET EventId = ''canhoes-do-ano'' WHERE EventId IS NULL;');
+GO
+
+IF COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NOT NULL
+   AND EXISTS
+   (
+       SELECT 1
+       FROM sys.columns
+       WHERE object_id = OBJECT_ID('dbo.CanhoesEventState')
+         AND name = 'EventId'
+         AND is_nullable = 1
+   )
+    ALTER TABLE dbo.CanhoesEventState ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CanhoesEventState_EventId' AND object_id = OBJECT_ID('dbo.CanhoesEventState'))
+    CREATE UNIQUE INDEX IX_CanhoesEventState_EventId ON dbo.CanhoesEventState(EventId);
 GO
 
 IF OBJECT_ID('dbo.WishlistItems', 'U') IS NULL

@@ -54,7 +54,8 @@ public record NomineeDto(
 public record CreateNomineeRequest(
     string? CategoryId,
     string Title,
-    string? TargetUserId
+    string? TargetUserId,
+    string? Kind
 );
 
 public record CategoryProposalDto(string Id, string Name, string? Description, string Status, DateTimeOffset CreatedAtUtc);

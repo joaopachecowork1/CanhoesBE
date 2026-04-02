@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Canhoes.Api.Access;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.DTOs;
@@ -15,9 +16,19 @@ namespace Canhoes.Api.Controllers;
 [Authorize]
 public sealed class HubController : ControllerBase
 {
-    private const string DefaultEventId = EventContextDefaults.DefaultEventId;
     private readonly CanhoesDbContext _db;
     private readonly IWebHostEnvironment _env;
+
+    private sealed record ActiveFeedAccessContext(
+        string EventId,
+        Guid UserId,
+        bool IsAdmin,
+        bool IsMember,
+        EventModuleAccessSnapshot ModuleAccess)
+    {
+        public bool CanAccess => IsAdmin || IsMember;
+        public bool CanManage => IsAdmin;
+    }
 
     private static readonly HashSet<string> AllowedImageExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".webp", ".gif" };
@@ -38,11 +49,12 @@ public sealed class HubController : ControllerBase
     {
         take = Math.Clamp(take, 1, 200);
 
-        var userId = HttpContext.GetUserId(); // Guid.Empty if not mapped (but [Authorize] should map)
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
         var posts = await _db.HubPosts
             .AsNoTracking()
-            .Where(x => x.EventId == DefaultEventId)
+            .Where(x => x.EventId == access.EventId)
             .OrderByDescending(x => x.IsPinned)
             .ThenByDescending(x => x.CreatedAtUtc)
             .Take(take)
@@ -73,10 +85,10 @@ public sealed class HubController : ControllerBase
             .GroupBy(r => (r.PostId, r.Emoji))
             .ToDictionary(g => g.Key, g => g.Count());
 
-        var myReactions = userId == Guid.Empty
+        var myReactions = access.UserId == Guid.Empty
             ? new Dictionary<string, List<string>>()
             : reactions
-                .Where(r => r.UserId == userId)
+                .Where(r => r.UserId == access.UserId)
                 .GroupBy(r => r.PostId)
                 .ToDictionary(g => g.Key, g => g.Select(x => x.Emoji).Distinct().ToList());
 
@@ -106,10 +118,10 @@ public sealed class HubController : ControllerBase
             .Select(v => new { v.PostId, v.UserId, v.OptionId })
             .ToListAsync(ct);
 
-        var myPollVote = userId == Guid.Empty
+        var myPollVote = access.UserId == Guid.Empty
             ? new Dictionary<string, string?>()
             : pollVotes
-                .Where(v => v.UserId == userId)
+                .Where(v => v.UserId == access.UserId)
                 .GroupBy(v => v.PostId)
                 .ToDictionary(g => g.Key, g => g.Select(x => x.OptionId).FirstOrDefault());
 
@@ -185,10 +197,9 @@ public sealed class HubController : ControllerBase
     [HttpPost("posts")]
     public async Task<ActionResult<HubPostDto>> CreatePost([FromBody] CreateHubPostRequest req, CancellationToken ct = default)
     {
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(req.Text)) return BadRequest("Text is required.");
-
-        var userId = HttpContext.GetUserId();
-        if (userId == Guid.Empty) return Unauthorized();
 
         var mediaUrls = (req.MediaUrls ?? new List<string>())
             .Where(s => !string.IsNullOrWhiteSpace(s))
@@ -219,8 +230,8 @@ public sealed class HubController : ControllerBase
 
         var post = new HubPostEntity
         {
-            EventId = DefaultEventId,
-            AuthorUserId = userId,
+            EventId = access.EventId,
+            AuthorUserId = access.UserId,
             Text = req.Text.Trim(),
             MediaUrl = mediaUrls.FirstOrDefault(),
             // Always persist a JSON array so we never depend on DB nullability/default constraints.
@@ -281,7 +292,7 @@ public sealed class HubController : ControllerBase
         }
 
         // return DTO for convenience (minimal fields)
-        var me = await _db.Users.AsNoTracking().Where(u => u.Id == userId)
+        var me = await _db.Users.AsNoTracking().Where(u => u.Id == access.UserId)
             .Select(u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName!)
             .SingleOrDefaultAsync(ct);
 
@@ -309,7 +320,11 @@ public sealed class HubController : ControllerBase
     public async Task<ActionResult<List<HubCommentDto>>> GetComments([FromRoute] string postId, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest();
-        var userId = HttpContext.GetUserId();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
+
+        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
+        if (!postExists) return NotFound();
 
         var comments = await _db.HubPostComments
             .AsNoTracking()
@@ -343,10 +358,10 @@ public sealed class HubController : ControllerBase
                 .Where(r => r.CommentId == c.Id)
                 .GroupBy(r => r.Emoji)
                 .ToDictionary(g => g.Key, g => g.Count()),
-            userId == Guid.Empty
+            access.UserId == Guid.Empty
                 ? new List<string>()
                 : reactions
-                    .Where(r => r.CommentId == c.Id && r.UserId == userId)
+                    .Where(r => r.CommentId == c.Id && r.UserId == access.UserId)
                     .Select(r => r.Emoji)
                     .Distinct()
                     .ToList()
@@ -361,16 +376,16 @@ public sealed class HubController : ControllerBase
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
         if (string.IsNullOrWhiteSpace(req.Text)) return BadRequest("Text is required.");
 
-        var userId = HttpContext.GetUserId();
-        if (userId == Guid.Empty) return Unauthorized();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
-        var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId, ct);
+        var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
         if (!postExists) return NotFound();
 
         var comment = new HubPostCommentEntity
         {
             PostId = postId,
-            UserId = userId,
+            UserId = access.UserId,
             Text = req.Text.Trim(),
             CreatedAtUtc = DateTime.UtcNow
         };
@@ -378,7 +393,7 @@ public sealed class HubController : ControllerBase
         _db.HubPostComments.Add(comment);
         await _db.SaveChangesAsync(ct);
 
-        var me = await _db.Users.AsNoTracking().Where(u => u.Id == userId)
+        var me = await _db.Users.AsNoTracking().Where(u => u.Id == access.UserId)
             .Select(u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName!)
             .SingleOrDefaultAsync(ct);
 
@@ -404,19 +419,22 @@ public sealed class HubController : ControllerBase
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
         if (string.IsNullOrWhiteSpace(commentId)) return BadRequest("commentId is required.");
 
-        var userId = HttpContext.GetUserId();
-        if (userId == Guid.Empty) return Unauthorized();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
         var comment = await _db.HubPostComments
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
         if (comment is null) return NotFound();
 
+        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
+        if (!postExists) return NotFound();
+
         var emoji = string.IsNullOrWhiteSpace(req.Emoji) ? "â¤ï¸" : req.Emoji.Trim();
         if (emoji.Length > 16) emoji = emoji.Substring(0, 16);
 
         var existing = await _db.HubPostCommentReactions
-            .SingleOrDefaultAsync(x => x.CommentId == commentId && x.UserId == userId && x.Emoji == emoji, ct);
+            .SingleOrDefaultAsync(x => x.CommentId == commentId && x.UserId == access.UserId && x.Emoji == emoji, ct);
 
         var active = existing is null;
         if (existing is null)
@@ -424,7 +442,7 @@ public sealed class HubController : ControllerBase
             _db.HubPostCommentReactions.Add(new HubPostCommentReactionEntity
             {
                 CommentId = commentId,
-                UserId = userId,
+                UserId = access.UserId,
                 Emoji = emoji,
                 CreatedAtUtc = DateTime.UtcNow
             });
@@ -445,7 +463,8 @@ public sealed class HubController : ControllerBase
     {
         if (files is null || files.Count == 0) return BadRequest("No files uploaded.");
 
-        var userId = HttpContext.GetUserId();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
         // Save *under* WebRootPath so the files are immediately available via UseStaticFiles().
         // If WebRootPath is ever null (non-standard host), fall back to <ContentRoot>/wwwroot.
@@ -484,7 +503,7 @@ public sealed class HubController : ControllerBase
                 Url = url,
                 OriginalFileName = f.FileName,
                 FileSizeBytes = f.Length,
-                UploadedByUserId = userId == Guid.Empty ? null : userId,
+                UploadedByUserId = access.UserId == Guid.Empty ? null : access.UserId,
                 ContentType = string.IsNullOrWhiteSpace(f.ContentType) ? null : f.ContentType,
                 ContentBytes = bytes,
                 UploadedAtUtc = DateTime.UtcNow
@@ -506,23 +525,24 @@ public sealed class HubController : ControllerBase
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
         if (req is null || string.IsNullOrWhiteSpace(req.OptionId)) return BadRequest("optionId is required.");
 
-        var userId = HttpContext.GetUserId();
-        if (userId == Guid.Empty) return Unauthorized();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
-        var pollExists = await _db.HubPostPolls.AnyAsync(x => x.PostId == postId, ct);
+        var pollExists = await _db.HubPostPolls.AnyAsync(x => x.PostId == postId, ct)
+            && await _db.HubPosts.AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
         if (!pollExists) return NotFound();
 
         var optionExists = await _db.HubPostPollOptions.AnyAsync(x => x.Id == req.OptionId && x.PostId == postId, ct);
         if (!optionExists) return BadRequest("Invalid optionId.");
 
-        var existing = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userId, ct);
+        var existing = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
 
         if (existing is null)
         {
             _db.HubPostPollVotes.Add(new HubPostPollVoteEntity
             {
                 PostId = postId,
-                UserId = userId,
+                UserId = access.UserId,
                 OptionId = req.OptionId.Trim(),
                 CreatedAtUtc = DateTime.UtcNow
             });
@@ -544,15 +564,15 @@ public sealed class HubController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var userId = HttpContext.GetUserId();
-        if (userId == Guid.Empty) return Unauthorized();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
-        var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId, ct);
+        var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
         if (!postExists) return NotFound();
 
         const string emoji = "â¤ï¸";
         var existing = await _db.HubPostReactions
-            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userId && x.Emoji == emoji, ct);
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == emoji, ct);
 
         var liked = existing is null;
         if (existing is null)
@@ -560,7 +580,7 @@ public sealed class HubController : ControllerBase
             _db.HubPostReactions.Add(new HubPostReactionEntity
             {
                 PostId = postId,
-                UserId = userId,
+                UserId = access.UserId,
                 Emoji = emoji,
                 CreatedAtUtc = DateTime.UtcNow
             });
@@ -586,14 +606,14 @@ public sealed class HubController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var userId = HttpContext.GetUserId();
-        if (userId == Guid.Empty) return Unauthorized();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
 
-        var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId, ct);
+        var postExists = await _db.HubPosts.AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
         if (!postExists) return NotFound();
 
         var existing = await _db.HubPostReactions
-            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userId && x.Emoji == emoji, ct);
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == emoji, ct);
 
         var now = DateTime.UtcNow;
 
@@ -603,7 +623,7 @@ public sealed class HubController : ControllerBase
             _db.HubPostReactions.Add(new HubPostReactionEntity
             {
                 PostId = postId,
-                UserId = userId,
+                UserId = access.UserId,
                 Emoji = emoji,
                 CreatedAtUtc = now
             });
@@ -625,8 +645,10 @@ public sealed class HubController : ControllerBase
     [HttpPost("admin/posts/{postId}/pin")]
     public async Task<ActionResult> SetPinned([FromRoute] string postId, [FromQuery] bool pinned = true, CancellationToken ct = default)
     {
-        if (!HttpContext.IsAdmin()) return Forbid();
-        var post = await _db.HubPosts.SingleOrDefaultAsync(x => x.Id == postId, ct);
+        var (access, error) = await RequireActiveEventAccessAsync(ct, requireManage: true);
+        if (error is not null) return error;
+
+        var post = await _db.HubPosts.SingleOrDefaultAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
         if (post is null) return NotFound();
 
         post.IsPinned = pinned;
@@ -637,9 +659,10 @@ public sealed class HubController : ControllerBase
     [HttpDelete("admin/posts/{postId}")]
     public async Task<ActionResult> DeletePost([FromRoute] string postId, CancellationToken ct = default)
     {
-        if (!HttpContext.IsAdmin()) return Forbid();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, requireManage: true);
+        if (error is not null) return error;
 
-        var post = await _db.HubPosts.SingleOrDefaultAsync(x => x.Id == postId, ct);
+        var post = await _db.HubPosts.SingleOrDefaultAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
         if (post is null) return NotFound();
 
         // delete children explicitly (no FKs declared)
@@ -662,10 +685,15 @@ public sealed class HubController : ControllerBase
     [HttpDelete("admin/comments/{commentId}")]
     public async Task<ActionResult> DeleteComment([FromRoute] string commentId, CancellationToken ct = default)
     {
-        if (!HttpContext.IsAdmin()) return Forbid();
+        var (access, error) = await RequireActiveEventAccessAsync(ct, requireManage: true);
+        if (error is not null) return error;
 
         var c = await _db.HubPostComments.SingleOrDefaultAsync(x => x.Id == commentId, ct);
         if (c is null) return NotFound();
+
+        var postBelongsToActiveEvent = await _db.HubPosts.AsNoTracking()
+            .AnyAsync(x => x.Id == c.PostId && x.EventId == access.EventId, ct);
+        if (!postBelongsToActiveEvent) return NotFound();
 
         var commentReactions = _db.HubPostCommentReactions.Where(x => x.CommentId == commentId);
         _db.HubPostCommentReactions.RemoveRange(commentReactions);
@@ -673,5 +701,47 @@ public sealed class HubController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok();
     }
+
+    private async Task<(ActiveFeedAccessContext Access, ActionResult? Error)> RequireActiveEventAccessAsync(
+        CancellationToken ct,
+        bool requireManage = false,
+        EventModuleKey? moduleKey = null)
+    {
+        var activeEventId = await ResolveActiveEventIdAsync(ct);
+        if (activeEventId is null) return (default!, NotFound());
+
+        var userId = HttpContext.GetUserId();
+        var isAdmin = HttpContext.IsAdmin();
+        var isMember = await _db.EventMembers
+            .AsNoTracking()
+            .AnyAsync(x => x.EventId == activeEventId && x.UserId == userId, ct);
+
+        var access = new ActiveFeedAccessContext(
+            activeEventId,
+            userId,
+            isAdmin,
+            isMember,
+            await EventModuleAccessEvaluator.EvaluateAsync(_db, activeEventId, userId, isAdmin, ct));
+
+        if (requireManage ? !access.CanManage : !access.CanAccess)
+        {
+            return (default!, Forbid());
+        }
+
+        if (moduleKey.HasValue && !EventModuleAccessEvaluator.IsModuleEnabled(access.ModuleAccess.EffectiveModules, moduleKey.Value))
+        {
+            return (default!, Forbid());
+        }
+
+        return (access, null);
+    }
+
+    private Task<string?> ResolveActiveEventIdAsync(CancellationToken ct) =>
+        _db.Events
+            .AsNoTracking()
+            .OrderByDescending(x => x.IsActive)
+            .ThenBy(x => x.Name)
+            .Select(x => x.Id)
+            .FirstOrDefaultAsync(ct);
 }
 

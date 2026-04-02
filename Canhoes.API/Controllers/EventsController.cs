@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Canhoes.Api.Access;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Media;
@@ -94,29 +95,21 @@ public sealed class EventsController : ControllerBase
         if (error is not null) return error;
 
         var phases = await LoadEventPhasesAsync(eventId, ct);
+        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, access.UserId, access.IsAdmin, ct);
 
-        var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
+        var activePhaseEntity = moduleAccess.ActivePhase ?? phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
         var nextPhase = phases
             .Where(x => activePhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activePhaseEntity.StartDateUtc)
             .OrderBy(x => x.StartDateUtc)
             .Select(ToEventPhaseDto)
             .FirstOrDefault();
-        var legacyState = await _db.CanhoesEventState
-            .AsNoTracking()
-            .FirstOrDefaultAsync(ct);
-        var moduleVisibility = ParseModuleVisibility(legacyState);
 
         var categoryIds = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId && x.IsActive)
             .Select(x => x.Id)
             .ToListAsync(ct);
-
-        var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
-        var hasAssignment = latestDraw is not null && await _db.SecretSantaAssignments
-            .AsNoTracking()
-            .AnyAsync(x => x.DrawId == latestDraw.Id && x.GiverUserId == access.UserId, ct);
 
         var myNomineeVotes = categoryIds.Count == 0
             ? 0
@@ -152,20 +145,13 @@ public sealed class EventsController : ControllerBase
                 await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.Status == "pending", ct),
                 await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId, ct)
             ),
-            latestDraw is not null,
-            hasAssignment,
+            moduleAccess.HasSecretSantaDraw,
+            moduleAccess.HasSecretSantaAssignment,
             await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId && x.UserId == access.UserId, ct),
-            await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.ProposedByUserId == access.UserId, ct),
+                await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.ProposedByUserId == access.UserId, ct),
             myNomineeVotes + myUserVotes,
             categoryIds.Count,
-            BuildModuleVisibility(
-                activePhaseEntity,
-                latestDraw is not null,
-                hasAssignment,
-                legacyState,
-                moduleVisibility,
-                access.IsAdmin
-            )
+            moduleAccess.EffectiveModules
         ));
     }
 
@@ -175,7 +161,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/voting/overview")]
     public async Task<ActionResult<EventVotingOverviewDto>> GetVotingOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Voting, ct);
         if (error is not null) return error;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
@@ -217,7 +203,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/secret-santa/overview")]
     public async Task<ActionResult<EventSecretSantaOverviewDto>> GetSecretSantaOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.SecretSanta, ct);
         if (error is not null) return error;
 
         var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
@@ -277,7 +263,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/feed/posts")]
     public async Task<ActionResult<List<EventFeedPostDto>>> GetPosts([FromRoute] string eventId, CancellationToken ct)
     {
-        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        var (_, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
 
         var posts = await _db.HubPosts
@@ -332,7 +318,7 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventPostRequest request,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.Content)) return BadRequest("Content is required.");
 
@@ -371,7 +357,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/categories")]
     public async Task<ActionResult<List<EventCategoryDto>>> GetCategories([FromRoute] string eventId, CancellationToken ct)
     {
-        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        var (_, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Categories, ct);
         if (error is not null) return error;
 
         var categories = await _db.AwardCategories
@@ -569,7 +555,7 @@ public sealed class EventsController : ControllerBase
         var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
-        var legacyState = await GetOrCreateLegacyStateAsync(ct);
+        var legacyState = await GetOrCreateEventStateAsync(eventId, ct);
         var nextModuleVisibility = request.ModuleVisibility ?? ParseModuleVisibility(legacyState);
 
         if (request.NominationsVisible.HasValue)
@@ -586,6 +572,37 @@ public sealed class EventsController : ControllerBase
         await _db.SaveChangesAsync(ct);
 
         return Ok(await BuildAdminStateDtoAsync(eventId, ct));
+    }
+
+    /// <summary>
+    /// Persists an explicit module configuration snapshot for the target event.
+    /// When present, this override takes precedence over the legacy phase +
+    /// visibility derivation used by older areas of the app.
+    /// </summary>
+    [HttpPatch("{eventId}/modules")]
+    public async Task<ActionResult<EventOverviewDto>> UpdateEventModules(
+        [FromRoute] string eventId,
+        [FromBody] UpdateEventModulesRequest request,
+        CancellationToken ct)
+    {
+        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var legacyState = await GetOrCreateEventStateAsync(eventId, ct);
+        legacyState.ModuleVisibilityJson = SerializeModuleVisibility(new EventAdminModuleVisibilityDto(
+            request.Modules.Feed,
+            request.Modules.SecretSanta,
+            request.Modules.Wishlist,
+            request.Modules.Categories,
+            request.Modules.Voting,
+            request.Modules.Gala,
+            request.Modules.Stickers,
+            request.Modules.Measures,
+            request.Modules.Nominees
+        ));
+
+        await _db.SaveChangesAsync(ct);
+        return await GetEventOverview(eventId, ct);
     }
 
     [HttpPut("{eventId}/admin/phase")]
@@ -613,7 +630,7 @@ public sealed class EventsController : ControllerBase
             phase.IsActive = phase.Id == targetPhase.Id;
         }
 
-        var legacyState = await GetOrCreateLegacyStateAsync(ct);
+        var legacyState = await GetOrCreateEventStateAsync(eventId, ct);
         ApplyLegacyStateForPhase(legacyState, targetPhase.Type);
 
         await _db.SaveChangesAsync(ct);
@@ -1132,7 +1149,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/voting")]
     public async Task<ActionResult<EventVotingBoardDto>> GetVotingBoard([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Voting, ct);
         if (error is not null) return error;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
@@ -1228,7 +1245,7 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventVoteRequest request,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Voting, ct);
         if (error is not null) return error;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
@@ -1328,7 +1345,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/proposals")]
     public async Task<ActionResult<List<EventProposalDto>>> GetProposals([FromRoute] string eventId, CancellationToken ct)
     {
-        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        var (_, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Categories, ct);
         if (error is not null) return error;
 
         var proposals = await _db.CategoryProposals
@@ -1346,9 +1363,9 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventProposalRequest request,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Categories, ct);
         if (error is not null) return error;
-        if (string.IsNullOrWhiteSpace(request.Content)) return BadRequest("Content is required.");
+        if (string.IsNullOrWhiteSpace(request.Name)) return BadRequest("Name is required.");
 
         var phase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Proposals, ct);
         if (!IsPhaseOpen(phase)) return BadRequest("Proposals are closed.");
@@ -1358,8 +1375,8 @@ public sealed class EventsController : ControllerBase
             Id = Guid.NewGuid().ToString(),
             EventId = eventId,
             ProposedByUserId = access.UserId,
-            Name = request.Content.Trim(),
-            Description = null,
+            Name = request.Name.Trim(),
+            Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim(),
             Status = "pending",
             CreatedAtUtc = DateTime.UtcNow
         };
@@ -1399,7 +1416,7 @@ public sealed class EventsController : ControllerBase
     [HttpGet("{eventId}/wishlist")]
     public async Task<ActionResult<List<EventWishlistItemDto>>> GetWishlist([FromRoute] string eventId, CancellationToken ct)
     {
-        var (_, error) = await RequireEventAccessAsync(eventId, ct);
+        var (_, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Wishlist, ct);
         if (error is not null) return error;
 
         var items = await _db.WishlistItems
@@ -1426,7 +1443,7 @@ public sealed class EventsController : ControllerBase
         [FromBody] CreateEventWishlistItemRequest request,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Wishlist, ct);
         if (error is not null) return error;
         if (string.IsNullOrWhiteSpace(request.Title)) return BadRequest("Title is required.");
 
@@ -1506,6 +1523,23 @@ public sealed class EventsController : ControllerBase
         return (access, null);
     }
 
+    private async Task<(EventAccessContext Access, EventModuleAccessSnapshot Snapshot, ActionResult? Error)> RequireEventModuleAccessAsync(
+        string eventId,
+        EventModuleKey moduleKey,
+        CancellationToken ct)
+    {
+        var (access, error) = await RequireEventAccessAsync(eventId, ct);
+        if (error is not null) return (default!, default!, error);
+
+        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, access.UserId, access.IsAdmin, ct);
+        if (!EventModuleAccessEvaluator.IsModuleEnabled(snapshot.EffectiveModules, moduleKey))
+        {
+            return (default!, default!, Forbid());
+        }
+
+        return (access, snapshot, null);
+    }
+
     private async Task<EventAccessContext?> GetEventAccessAsync(string eventId, CancellationToken ct)
     {
         var eventEntity = await _db.Events
@@ -1540,39 +1574,24 @@ public sealed class EventsController : ControllerBase
             .FirstOrDefaultAsync(ct);
     }
 
-    private static bool IsPhaseOpen(EventPhaseEntity? phase)
-    {
-        if (phase is null || !phase.IsActive) return false;
-
-        var now = DateTime.UtcNow;
-        return phase.StartDateUtc <= now && now <= phase.EndDateUtc;
-    }
+    private static bool IsPhaseOpen(EventPhaseEntity? phase) => EventModuleAccessEvaluator.IsPhaseOpen(phase);
 
     /// <summary>
     /// Ensures the legacy state row exists because older areas of the app and
     /// the event overview still bridge through that state until the migration to
     /// fully event-scoped admin controls is complete.
     /// </summary>
-    private async Task<CanhoesEventStateEntity> GetOrCreateLegacyStateAsync(CancellationToken ct)
-    {
-        var state = await _db.CanhoesEventState.FirstOrDefaultAsync(ct);
-        if (state is not null) return state;
-
-        state = new CanhoesEventStateEntity();
-        _db.CanhoesEventState.Add(state);
-        await _db.SaveChangesAsync(ct);
-        return state;
-    }
+    private Task<CanhoesEventStateEntity> GetOrCreateEventStateAsync(string eventId, CancellationToken ct) =>
+        EventModuleAccessEvaluator.GetOrCreateEventStateAsync(_db, eventId, ct);
 
     private async Task<EventAdminStateDto> BuildAdminStateDtoAsync(string eventId, CancellationToken ct)
     {
-        var legacyState = await GetOrCreateLegacyStateAsync(ct);
+        var legacyState = await GetOrCreateEventStateAsync(eventId, ct);
         var phases = await LoadEventPhasesAsync(eventId, ct);
+        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, Guid.Empty, isAdmin: true, ct);
 
-        var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
+        var activePhaseEntity = moduleAccess.ActivePhase ?? phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
-        var moduleVisibility = ParseModuleVisibility(legacyState);
-        var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
 
         return new EventAdminStateDto(
             eventId,
@@ -1580,15 +1599,8 @@ public sealed class EventsController : ControllerBase
             phases.Select(ToEventPhaseDto).ToList(),
             legacyState.NominationsVisible,
             legacyState.ResultsVisible,
-            moduleVisibility,
-            BuildModuleVisibility(
-                activePhaseEntity,
-                latestDraw is not null,
-                false,
-                legacyState,
-                moduleVisibility,
-                isAdmin: false
-            ),
+            moduleAccess.ModuleVisibility,
+            moduleAccess.EffectiveModules,
             await BuildAdminCountsDtoAsync(eventId, ct)
         );
     }
@@ -1830,129 +1842,17 @@ public sealed class EventsController : ControllerBase
         return codes;
     }
 
-    private static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? legacyState)
-    {
-        if (string.IsNullOrWhiteSpace(legacyState?.ModuleVisibilityJson))
-        {
-            return DefaultModuleVisibility();
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<EventAdminModuleVisibilityDto>(legacyState.ModuleVisibilityJson)
-                ?? DefaultModuleVisibility();
-        }
-        catch
-        {
-            return DefaultModuleVisibility();
-        }
-    }
+    private static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? legacyState) =>
+        EventModuleAccessEvaluator.ParseModuleVisibility(legacyState);
 
     private static string SerializeModuleVisibility(EventAdminModuleVisibilityDto visibility) =>
-        JsonSerializer.Serialize(visibility);
+        EventModuleAccessEvaluator.SerializeModuleVisibility(visibility);
 
     private static EventAdminModuleVisibilityDto DefaultModuleVisibility() =>
-        new(
-            Feed: true,
-            SecretSanta: true,
-            Wishlist: true,
-            Categories: true,
-            Voting: true,
-            Gala: true,
-            Stickers: true,
-            Measures: true,
-            Nominees: true
-        );
+        EventModuleAccessEvaluator.DefaultModuleVisibility();
 
-    private static void ApplyLegacyStateForPhase(CanhoesEventStateEntity legacyState, string phaseType)
-    {
-        switch (phaseType)
-        {
-            case EventPhaseTypes.Draw:
-                legacyState.Phase = "locked";
-                legacyState.NominationsVisible = false;
-                legacyState.ResultsVisible = false;
-                break;
-            case EventPhaseTypes.Proposals:
-                legacyState.Phase = "nominations";
-                legacyState.NominationsVisible = true;
-                legacyState.ResultsVisible = false;
-                break;
-            case EventPhaseTypes.Voting:
-                legacyState.Phase = "voting";
-                legacyState.NominationsVisible = false;
-                legacyState.ResultsVisible = false;
-                break;
-            case EventPhaseTypes.Results:
-                legacyState.Phase = "gala";
-                legacyState.NominationsVisible = false;
-                legacyState.ResultsVisible = true;
-                break;
-        }
-    }
-
-    /// <summary>
-    /// Bridges the new phase model with the legacy admin toggles that still
-    /// exist in <see cref="CanhoesEventStateEntity"/> until that state is fully
-    /// consolidated into the event-scoped model.
-    /// </summary>
-    private static EventModulesDto BuildModuleVisibility(
-        EventPhaseEntity? activePhase,
-        bool hasSecretSantaDraw,
-        bool hasSecretSantaAssignment,
-        CanhoesEventStateEntity? legacyState,
-        EventAdminModuleVisibilityDto moduleVisibility,
-        bool isAdmin)
-    {
-        var legacyPhase = legacyState?.Phase?.Trim().ToLowerInvariant();
-        var nominationsVisible = legacyState?.NominationsVisible ?? false;
-        var resultsVisible = legacyState?.ResultsVisible ?? false;
-        var activeType = activePhase?.Type;
-
-        var isDrawPhase = activeType == EventPhaseTypes.Draw;
-        var isProposalPhase = activeType == EventPhaseTypes.Proposals || legacyPhase == "nominations";
-        var isVotingPhase = activeType == EventPhaseTypes.Voting || legacyPhase == "voting";
-        var isResultsPhase =
-            activeType == EventPhaseTypes.Results ||
-            legacyPhase == "gala" ||
-            (legacyPhase == "locked" && resultsVisible);
-
-        var proposalModulesVisible = isAdmin || (nominationsVisible && isProposalPhase);
-        var resultsModulesVisible = isAdmin || resultsVisible || isResultsPhase;
-        var baseSecretSantaVisible = isDrawPhase || hasSecretSantaDraw || hasSecretSantaAssignment || isVotingPhase || isResultsPhase;
-        var baseCategoriesVisible = isProposalPhase || isVotingPhase || resultsModulesVisible;
-        var baseVotingVisible = isVotingPhase;
-        var baseNomineesVisible = nominationsVisible || resultsModulesVisible;
-
-        if (isAdmin)
-        {
-            return new EventModulesDto(
-                Feed: true,
-                SecretSanta: true,
-                Wishlist: true,
-                Categories: true,
-                Voting: true,
-                Gala: true,
-                Stickers: true,
-                Measures: true,
-                Nominees: true,
-                Admin: true
-            );
-        }
-
-        return new EventModulesDto(
-            Feed: moduleVisibility.Feed,
-            SecretSanta: moduleVisibility.SecretSanta && baseSecretSantaVisible,
-            Wishlist: moduleVisibility.Wishlist,
-            Categories: moduleVisibility.Categories && baseCategoriesVisible,
-            Voting: moduleVisibility.Voting && baseVotingVisible,
-            Gala: moduleVisibility.Gala && resultsModulesVisible,
-            Stickers: moduleVisibility.Stickers && proposalModulesVisible,
-            Measures: moduleVisibility.Measures && proposalModulesVisible,
-            Nominees: moduleVisibility.Nominees && baseNomineesVisible,
-            Admin: false
-        );
-    }
+    private static void ApplyLegacyStateForPhase(CanhoesEventStateEntity legacyState, string phaseType) =>
+        EventModuleAccessEvaluator.ApplyLegacyStateForPhase(legacyState, phaseType);
 
     private static EventSummaryDto ToEventSummaryDto(EventEntity entity) =>
         new(entity.Id, entity.Name, entity.IsActive);
@@ -2024,16 +1924,11 @@ public sealed class EventsController : ControllerBase
             entity.Id,
             entity.EventId,
             entity.ProposedByUserId,
-            BuildProposalContent(entity),
+            entity.Name,
+            entity.Description,
             entity.Status,
             new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
         );
-
-    private static string BuildProposalContent(CategoryProposalEntity entity)
-    {
-        if (string.IsNullOrWhiteSpace(entity.Description)) return entity.Name;
-        return $"{entity.Name}\n\n{entity.Description}";
-    }
 
     private static ProposalsByStatusDto<T> BuildProposalHistory<T>(
         List<T> items,

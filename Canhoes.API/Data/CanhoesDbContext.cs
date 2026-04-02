@@ -100,6 +100,14 @@ public class CanhoesDbContext : DbContext
             .HasKey(x => x.Id);
 
         modelBuilder.Entity<CanhoesEventStateEntity>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
+
+        modelBuilder.Entity<CanhoesEventStateEntity>()
+            .HasIndex(x => x.EventId)
+            .IsUnique();
+
+        modelBuilder.Entity<CanhoesEventStateEntity>()
             .Property(x => x.ModuleVisibilityJson)
             .HasColumnType("nvarchar(max)")
             .HasDefaultValue("{}");

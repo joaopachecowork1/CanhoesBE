@@ -81,6 +81,10 @@ public record EventModulesDto(
     bool Admin
 );
 
+public record UpdateEventModulesRequest(
+    EventModulesDto Modules
+);
+
 /// <summary>
 /// Lightweight dashboard payload for the shell and event home. It combines the
 /// current phase, member permissions, high-level counts and module visibility.
@@ -284,12 +288,13 @@ public record EventProposalDto(
     string Id,
     string EventId,
     Guid UserId,
-    string Content,
+    string Name,
+    string? Description,
     string Status,
     DateTimeOffset CreatedAt
 );
 
-public record CreateEventProposalRequest(string Content);
+public record CreateEventProposalRequest(string Name, string? Description);
 
 public record UpdateEventProposalRequest(string Status);
 

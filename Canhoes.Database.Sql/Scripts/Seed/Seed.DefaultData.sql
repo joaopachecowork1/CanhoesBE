@@ -1,10 +1,10 @@
 PRINT N'Applying Canhoes seed data...';
 GO
 
-IF NOT EXISTS (SELECT 1 FROM dbo.CanhoesEventState WHERE Id = 1)
+IF NOT EXISTS (SELECT 1 FROM dbo.CanhoesEventState WHERE EventId = 'canhoes-do-ano')
 BEGIN
-    INSERT INTO dbo.CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
-    VALUES (1, 'nominations', 1, 0, '{}');
+    INSERT INTO dbo.CanhoesEventState (Id, EventId, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
+    VALUES (1, 'canhoes-do-ano', 'nominations', 1, 0, '{}');
 END
 GO
 
@@ -76,7 +76,7 @@ SET phase.IsActive =
 FROM dbo.EventPhases phase
 CROSS JOIN dbo.CanhoesEventState state
 WHERE phase.EventId = 'canhoes-do-ano'
-  AND state.Id = 1;
+  AND state.EventId = 'canhoes-do-ano';
 GO
 
 INSERT INTO dbo.EventMembers (Id, EventId, UserId, Role, JoinedAtUtc)

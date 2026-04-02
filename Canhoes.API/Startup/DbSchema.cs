@@ -109,6 +109,15 @@ BEGIN
   ALTER TABLE Nominees ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
 END
 
+IF OBJECT_ID('dbo.Nominees', 'U') IS NOT NULL AND COL_LENGTH('dbo.Nominees', 'SubmissionKind') IS NULL
+BEGIN
+  ALTER TABLE dbo.Nominees ADD SubmissionKind NVARCHAR(32) NULL;
+  UPDATE dbo.Nominees
+  SET SubmissionKind = CASE WHEN ImageUrl IS NULL THEN 'nominees' ELSE 'stickers' END
+  WHERE SubmissionKind IS NULL;
+  ALTER TABLE dbo.Nominees ALTER COLUMN SubmissionKind NVARCHAR(32) NOT NULL;
+END
+
 IF OBJECT_ID('dbo.CategoryProposals', 'U') IS NOT NULL AND COL_LENGTH('dbo.CategoryProposals', 'EventId') IS NULL
 BEGIN
   ALTER TABLE CategoryProposals ADD EventId NVARCHAR(64) NULL;
@@ -141,6 +150,24 @@ IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL AND COL_LENGTH('dbo.Canho
 BEGIN
   ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NOT NULL
     CONSTRAINT DF_CanhoesEventState_ModuleVisibilityJson DEFAULT('{{}}');
+END
+
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL AND COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState ADD EventId NVARCHAR(64) NULL;
+  UPDATE dbo.CanhoesEventState SET EventId = 'canhoes-do-ano' WHERE EventId IS NULL;
+  ALTER TABLE dbo.CanhoesEventState ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND NOT EXISTS (
+  SELECT 1
+  FROM sys.indexes
+  WHERE name = 'IX_CanhoesEventState_EventId'
+    AND object_id = OBJECT_ID('dbo.CanhoesEventState')
+)
+BEGIN
+  CREATE UNIQUE INDEX IX_CanhoesEventState_EventId ON dbo.CanhoesEventState(EventId);
 END
 
 -- Hub / Feed
@@ -371,6 +398,45 @@ IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
 AND COL_LENGTH('dbo.CanhoesEventState', 'ModuleVisibilityJson') IS NULL
 BEGIN
   ALTER TABLE dbo.CanhoesEventState ADD ModuleVisibilityJson NVARCHAR(MAX) NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NULL
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState ADD EventId NVARCHAR(64) NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NOT NULL
+BEGIN
+  UPDATE dbo.CanhoesEventState
+  SET EventId = 'canhoes-do-ano'
+  WHERE EventId IS NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.CanhoesEventState', 'EventId') IS NOT NULL
+BEGIN
+  ALTER TABLE dbo.CanhoesEventState ALTER COLUMN EventId NVARCHAR(64) NOT NULL;
+END
+");
+
+        await db.Database.ExecuteSqlRawAsync(@"
+IF OBJECT_ID('dbo.CanhoesEventState', 'U') IS NOT NULL
+AND NOT EXISTS (
+  SELECT 1
+  FROM sys.indexes
+  WHERE name = 'IX_CanhoesEventState_EventId'
+    AND object_id = OBJECT_ID('dbo.CanhoesEventState')
+)
+BEGIN
+  CREATE UNIQUE INDEX IX_CanhoesEventState_EventId ON dbo.CanhoesEventState(EventId);
 END
 ");
 

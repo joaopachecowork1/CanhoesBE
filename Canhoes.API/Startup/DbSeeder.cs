@@ -20,15 +20,21 @@ internal static class DbSeeder
 
     private static void EnsureCanhoesEventState(CanhoesDbContext db)
     {
-        if (db.CanhoesEventState.Any()) return;
+        if (db.CanhoesEventState.Any(x => x.EventId == EventContextDefaults.DefaultEventId)) return;
 
-        // EnsureCreated() may not handle IDENTITY_INSERT automatically.
-        db.Database.ExecuteSqlRaw(@"
-            SET IDENTITY_INSERT CanhoesEventState ON;
-            INSERT INTO CanhoesEventState (Id, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
-            VALUES (1, 'nominations', 1, 0, '{{}}');
-            SET IDENTITY_INSERT CanhoesEventState OFF;
-        ");
+        var nextId = (db.CanhoesEventState.Max(x => (int?)x.Id) ?? 0) + 1;
+        var state = new CanhoesEventStateEntity
+        {
+            Id = nextId,
+            EventId = EventContextDefaults.DefaultEventId,
+            Phase = "nominations",
+            NominationsVisible = true,
+            ResultsVisible = false,
+            ModuleVisibilityJson = "{}"
+        };
+
+        db.CanhoesEventState.Add(state);
+        db.SaveChanges();
     }
 
     private static void EnsureDefaultAwardCategories(CanhoesDbContext db)
