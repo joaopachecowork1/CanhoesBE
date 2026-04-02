@@ -409,6 +409,40 @@ public sealed class HubController : ControllerBase
         ));
     }
 
+    [HttpDelete("posts/{postId}/comments/{commentId}")]
+    public async Task<ActionResult> DeleteOwnComment(
+        [FromRoute] string postId,
+        [FromRoute] string commentId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+        if (string.IsNullOrWhiteSpace(commentId)) return BadRequest("commentId is required.");
+
+        var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Feed);
+        if (error is not null) return error;
+
+        var comment = await _db.HubPostComments
+            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
+        if (comment is null) return NotFound();
+
+        var postBelongsToActiveEvent = await _db.HubPosts
+            .AsNoTracking()
+            .AnyAsync(x => x.Id == postId && x.EventId == access.EventId, ct);
+        if (!postBelongsToActiveEvent) return NotFound();
+
+        if (comment.UserId != access.UserId && !access.CanManage)
+        {
+            return Forbid();
+        }
+
+        var commentReactions = _db.HubPostCommentReactions.Where(x => x.CommentId == commentId);
+        _db.HubPostCommentReactions.RemoveRange(commentReactions);
+        _db.HubPostComments.Remove(comment);
+
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     [HttpPost("posts/{postId}/comments/{commentId}/reactions")]
     public async Task<ActionResult<object>> ToggleCommentReaction(
         [FromRoute] string postId,
