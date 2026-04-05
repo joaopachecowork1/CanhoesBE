@@ -25,7 +25,9 @@ public class ErrorHandlingMiddleware
             context.Response.ContentType = "application/problem+json";
             var problem = new
             {
-                title = "Unexpected error",
+                code = "UNHANDLED_SERVER_ERROR",
+                title = "Unhandled server error",
+                message = "The server failed to process the request.",
                 status = 500,
                 detail = ex.Message,
                 traceId = context.TraceIdentifier

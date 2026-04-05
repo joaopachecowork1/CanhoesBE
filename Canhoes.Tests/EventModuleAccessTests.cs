@@ -1,6 +1,7 @@
 using Canhoes.Api.Access;
 using Canhoes.Api.Controllers;
 using Canhoes.Api.Data;
+using Canhoes.Api.DTOs;
 using Canhoes.Api.Models;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -184,6 +185,190 @@ public sealed class EventModuleAccessTests
         stickersResult.Result.Should().BeOfType<ForbidResult>();
     }
 
+    [Fact]
+    public async Task AdminGetProposalsHistory_ShouldGroupStatusesPerEvent()
+    {
+        await using var db = CreateDbContext();
+        var adminId = Guid.NewGuid();
+
+        SeedEvent(db, "event-history", isActive: true);
+        SeedState(db, "event-history", EventPhaseTypes.Proposals, BuildVisibility());
+        SeedEvent(db, "event-other");
+        SeedState(db, "event-other", EventPhaseTypes.Proposals, BuildVisibility());
+
+        db.CategoryProposals.AddRange(
+            new CategoryProposalEntity
+            {
+                Id = "cat-pending",
+                EventId = "event-history",
+                Name = "Categoria Pendente",
+                Status = "pending",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-3)
+            },
+            new CategoryProposalEntity
+            {
+                Id = "cat-approved",
+                EventId = "event-history",
+                Name = "Categoria Aprovada",
+                Status = "approved",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+            },
+            new CategoryProposalEntity
+            {
+                Id = "cat-ignored",
+                EventId = "event-other",
+                Name = "Outra Categoria",
+                Status = "pending",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+            });
+
+        db.MeasureProposals.AddRange(
+            new MeasureProposalEntity
+            {
+                Id = "measure-rejected",
+                EventId = "event-history",
+                Text = "Medida Rejeitada",
+                Status = "rejected",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+            },
+            new MeasureProposalEntity
+            {
+                Id = "measure-pending",
+                EventId = "event-history",
+                Text = "Medida Pendente",
+                Status = "pending",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+            });
+        db.SaveChanges();
+
+        var controller = CreateEventsController(db, adminId, isAdmin: true);
+
+        var result = await controller.AdminGetProposalsHistory("event-history", CancellationToken.None);
+        var payload = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<AdminProposalsHistoryDto>().Subject;
+
+        payload.CategoryProposals.Pending.Select(x => x.Id).Should().Equal("cat-pending");
+        payload.CategoryProposals.Approved.Select(x => x.Id).Should().Equal("cat-approved");
+        payload.CategoryProposals.Rejected.Should().BeEmpty();
+        payload.MeasureProposals.Pending.Select(x => x.Id).Should().Equal("measure-pending");
+        payload.MeasureProposals.Rejected.Select(x => x.Id).Should().Equal("measure-rejected");
+    }
+
+    [Fact]
+    public async Task HubGetPosts_ShouldComposeMediaReactionsPollAndCounts()
+    {
+        await using var db = CreateDbContext();
+        var userId = Guid.NewGuid();
+        var otherUserId = Guid.NewGuid();
+
+        SeedEvent("event-feed", db, isActive: true);
+        SeedState(db, "event-feed", EventPhaseTypes.Proposals, BuildVisibility());
+        SeedMember(db, "event-feed", userId);
+        SeedUser(db, userId, "autor@example.com", "Autor");
+        SeedUser(db, otherUserId, "outro@example.com", "Outro");
+
+        db.HubPosts.Add(new HubPostEntity
+        {
+            Id = "post-1",
+            EventId = "event-feed",
+            AuthorUserId = userId,
+            Text = "Post principal",
+            MediaUrl = null,
+            MediaUrlsJson = null,
+            IsPinned = false,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        db.HubPostMedia.Add(new HubPostMediaEntity
+        {
+            Id = "media-1",
+            PostId = "post-1",
+            Url = "/uploads/hub/post-1.png",
+            OriginalFileName = "post-1.png",
+            ContentBytes = Array.Empty<byte>(),
+            UploadedAtUtc = DateTime.UtcNow
+        });
+        db.HubPostComments.Add(new HubPostCommentEntity
+        {
+            Id = "comment-1",
+            PostId = "post-1",
+            UserId = otherUserId,
+            Text = "Comentario",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        db.HubPostReactions.AddRange(
+            new HubPostReactionEntity
+            {
+                Id = "reaction-1",
+                PostId = "post-1",
+                UserId = userId,
+                Emoji = "\u2764\uFE0F",
+                CreatedAtUtc = DateTime.UtcNow
+            },
+            new HubPostReactionEntity
+            {
+                Id = "reaction-2",
+                PostId = "post-1",
+                UserId = otherUserId,
+                Emoji = "🔥",
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        db.HubPostPolls.Add(new HubPostPollEntity
+        {
+            PostId = "post-1",
+            Question = "Qual escolhes?",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        db.HubPostPollOptions.AddRange(
+            new HubPostPollOptionEntity
+            {
+                Id = "opt-1",
+                PostId = "post-1",
+                Text = "Opcao A",
+                SortOrder = 0
+            },
+            new HubPostPollOptionEntity
+            {
+                Id = "opt-2",
+                PostId = "post-1",
+                Text = "Opcao B",
+                SortOrder = 1
+            });
+        db.HubPostPollVotes.AddRange(
+            new HubPostPollVoteEntity
+            {
+                Id = "vote-1",
+                PostId = "post-1",
+                UserId = userId,
+                OptionId = "opt-1",
+                CreatedAtUtc = DateTime.UtcNow
+            },
+            new HubPostPollVoteEntity
+            {
+                Id = "vote-2",
+                PostId = "post-1",
+                UserId = otherUserId,
+                OptionId = "opt-2",
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        db.SaveChanges();
+
+        var controller = CreateHubController(db, userId);
+
+        var result = await controller.GetPosts(50, CancellationToken.None);
+        var posts = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<List<HubPostDto>>().Subject;
+        var post = posts.Should().ContainSingle().Subject;
+
+        post.AuthorName.Should().Be("Autor");
+        post.MediaUrls.Should().Contain("/uploads/hub/post-1.png");
+        post.CommentCount.Should().Be(1);
+        post.ReactionCounts.Should().ContainKey("\u2764\uFE0F").WhoseValue.Should().Be(1);
+        post.ReactionCounts.Should().ContainKey("🔥").WhoseValue.Should().Be(1);
+        post.MyReactions.Should().Contain("\u2764\uFE0F");
+        post.LikedByMe.Should().BeTrue();
+        post.Poll.Should().NotBeNull();
+        post.Poll!.MyOptionId.Should().Be("opt-1");
+        post.Poll.TotalVotes.Should().Be(2);
+    }
+
     private static CanhoesDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<CanhoesDbContext>()
@@ -208,6 +393,36 @@ public sealed class EventModuleAccessTests
         return controller;
     }
 
+    private static EventsController CreateEventsController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
+    {
+        var controller = new EventsController(db)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            }
+        };
+
+        controller.ControllerContext.HttpContext.Items["UserId"] = userId;
+        controller.ControllerContext.HttpContext.Items["IsAdmin"] = isAdmin;
+        return controller;
+    }
+
+    private static HubController CreateHubController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
+    {
+        var controller = new HubController(db, new FakeWebHostEnvironment())
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            }
+        };
+
+        controller.ControllerContext.HttpContext.Items["UserId"] = userId;
+        controller.ControllerContext.HttpContext.Items["IsAdmin"] = isAdmin;
+        return controller;
+    }
+
     private static void SeedEvent(CanhoesDbContext db, string eventId, bool isActive = false)
     {
         db.Events.Add(new EventEntity
@@ -218,6 +433,9 @@ public sealed class EventModuleAccessTests
             CreatedAtUtc = DateTime.UtcNow
         });
     }
+
+    private static void SeedEvent(string eventId, CanhoesDbContext db, bool isActive = false) =>
+        SeedEvent(db, eventId, isActive);
 
     private static void SeedMember(CanhoesDbContext db, string eventId, Guid userId)
     {
@@ -242,6 +460,20 @@ public sealed class EventModuleAccessTests
             SortOrder = sortOrder,
             Kind = AwardCategoryKind.Sticker,
             IsActive = true
+        });
+        db.SaveChanges();
+    }
+
+    private static void SeedUser(CanhoesDbContext db, Guid userId, string email, string? displayName = null, bool isAdmin = false)
+    {
+        db.Users.Add(new UserEntity
+        {
+            Id = userId,
+            ExternalId = $"ext-{userId:N}",
+            Email = email,
+            DisplayName = displayName,
+            IsAdmin = isAdmin,
+            CreatedAt = DateTime.UtcNow
         });
         db.SaveChanges();
     }

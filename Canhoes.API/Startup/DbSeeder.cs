@@ -12,10 +12,34 @@ internal static class DbSeeder
 {
     public static void Seed(CanhoesDbContext db, string? webRootPath = null)
     {
+        EnsureMockUser(db);
         EnsureCanhoesEventState(db);
         EnsureDefaultAwardCategories(db);
         EventContextBootstrap.EnsureDefaultEventContext(db);
         EnsureUploadDirectories(webRootPath);
+    }
+
+    private static void EnsureMockUser(CanhoesDbContext db)
+    {
+        var mockUserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var mockEmail = "dev@canhoes.com";
+
+        if (db.Users.Any(x => x.Id == mockUserId || x.Email == mockEmail || x.ExternalId == mockEmail))
+        {
+            return;
+        }
+
+        db.Users.Add(new UserEntity
+        {
+            Id = mockUserId,
+            ExternalId = mockEmail,
+            Email = mockEmail,
+            DisplayName = "Mock Admin",
+            IsAdmin = true,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        db.SaveChanges();
     }
 
     private static void EnsureCanhoesEventState(CanhoesDbContext db)

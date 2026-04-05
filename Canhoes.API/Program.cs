@@ -93,14 +93,13 @@ app.UseMiddleware<ErrorHandlingMiddleware>();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-//app.UseHttpsRedirection();
-
 // Serve uploaded images (for CanhÃµes do Ano)
 app.UseStaticFiles();
 
 app.UseAuthentication();
 // Injetamos o nosso Mock SE a flag estiver ativa
-var useMockAuth = builder.Configuration.GetValue<bool>("Auth:UseMockAuth");
+var useMockAuth = builder.Environment.IsDevelopment()
+    || builder.Configuration.GetValue<bool>("Auth:UseMockAuth");
 if (useMockAuth)
 {
     app.UseMiddleware<MockAuthMiddleware>();
@@ -128,7 +127,7 @@ using (var scope = app.Services.CreateScope())
     DatabaseSetupRunner.InitializeAsync(db, logger, webRootPath).GetAwaiter().GetResult();
 }
 
-app.Run();
+await app.RunAsync();
 
 static string ResolveWebRootPath(IWebHostEnvironment environment)
 {
