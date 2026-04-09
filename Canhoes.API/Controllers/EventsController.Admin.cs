@@ -341,6 +341,15 @@ public sealed partial class EventsController
 
         return Ok(await BuildAdminVotesDtoAsync(eventId, ct));
     }
+
+    [HttpGet("{eventId}/admin/official-results")]
+    public async Task<ActionResult<AdminOfficialResultsDto>> AdminGetOfficialResults([FromRoute] string eventId, CancellationToken ct)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        return Ok(await BuildAdminOfficialResultsDtoAsync(eventId, ct));
+    }
+
     [HttpGet("{eventId}/admin/category-proposals")]
     public async Task<ActionResult<List<CategoryProposalDto>>> AdminGetCategoryProposals([FromRoute] string eventId, [FromQuery] string? status, CancellationToken ct)
     {
@@ -543,6 +552,16 @@ public sealed partial class EventsController
         return Ok(await LoadAdminNomineeDtosAsync(eventId, normalizedStatus, ct));
     }
 
+    [HttpGet("{eventId}/admin/nominations")]
+    public async Task<ActionResult<List<AdminNomineeDto>>> AdminGetNominations([FromRoute] string eventId, [FromQuery] string? status, CancellationToken ct)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+
+        return Ok(await LoadAdminNominationDtosAsync(eventId, normalizedStatus, ct));
+    }
+
     [HttpPost("{eventId}/admin/nominees/{nomineeId}/set-category")]
     public async Task<ActionResult<NomineeDto>> AdminSetNomineeCategory([FromRoute] string eventId, [FromRoute] string nomineeId, [FromBody] SetNomineeCategoryRequest request, CancellationToken ct)
     {
@@ -568,6 +587,31 @@ public sealed partial class EventsController
         return Ok(ToNomineeDto(nominee));
     }
 
+    [HttpPost("{eventId}/admin/nominations/{nomineeId}/set-category")]
+    public async Task<ActionResult<AdminNomineeDto>> AdminSetNominationCategory([FromRoute] string eventId, [FromRoute] string nomineeId, [FromBody] SetNomineeCategoryRequest request, CancellationToken ct)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
+        if (nominee is null) return NotFound();
+
+        if (!string.IsNullOrWhiteSpace(request.CategoryId))
+        {
+            var categoryExists = await _db.AwardCategories
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == request.CategoryId && x.EventId == eventId, ct);
+
+            if (!categoryExists) return BadRequest("Invalid category.");
+        }
+
+        nominee.CategoryId = string.IsNullOrWhiteSpace(request.CategoryId)
+            ? null
+            : request.CategoryId.Trim();
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
+    }
+
     [HttpPost("{eventId}/admin/nominees/{nomineeId}/approve")]
     public async Task<ActionResult<NomineeDto>> AdminApproveNominee([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
     {
@@ -584,6 +628,22 @@ public sealed partial class EventsController
         return Ok(ToNomineeDto(nominee));
     }
 
+    [HttpPost("{eventId}/admin/nominations/{nomineeId}/approve")]
+    public async Task<ActionResult<AdminNomineeDto>> AdminApproveNomination([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
+        if (nominee is null) return NotFound();
+        if (string.IsNullOrWhiteSpace(nominee.CategoryId))
+            return BadRequest("Nominee must have a category before approval.");
+
+        nominee.Status = "approved";
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
+    }
+
     [HttpPost("{eventId}/admin/nominees/{nomineeId}/reject")]
     public async Task<ActionResult<NomineeDto>> AdminRejectNominee([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
     {
@@ -596,5 +656,19 @@ public sealed partial class EventsController
         await _db.SaveChangesAsync(ct);
 
         return Ok(ToNomineeDto(nominee));
+    }
+
+    [HttpPost("{eventId}/admin/nominations/{nomineeId}/reject")]
+    public async Task<ActionResult<AdminNomineeDto>> AdminRejectNomination([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
+        if (nominee is null) return NotFound();
+
+        nominee.Status = "rejected";
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
     }
 }

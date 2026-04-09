@@ -138,6 +138,53 @@ public record EventAdminStateDto(
 );
 
 /// <summary>
+/// Admin-facing nominee projection enriched with submitter identity so the
+/// moderation queue can render without extra joins on the client.
+/// </summary>
+public record AdminNomineeDto(
+    string Id,
+    string? CategoryId,
+    string Title,
+    string? ImageUrl,
+    string Status,
+    DateTimeOffset CreatedAtUtc,
+    Guid SubmittedByUserId,
+    string SubmittedByName
+);
+
+/// <summary>
+/// Vote tally for one person/category entry in the official results screen.
+/// </summary>
+public record AdminNomineeVoteTallyDto(
+    string NomineeId,
+    string NomineeTitle,
+    string? ImageUrl,
+    int VoteCount,
+    List<string> VoterUserIds
+);
+
+/// <summary>
+/// Aggregated official result for a user-vote category.
+/// </summary>
+public record AdminCategoryResultDto(
+    string CategoryId,
+    string CategoryName,
+    int TotalVotes,
+    List<AdminNomineeVoteTallyDto> Nominees,
+    double ParticipationRate
+);
+
+/// <summary>
+/// Official-results snapshot used by the admin audit panel.
+/// </summary>
+public record AdminOfficialResultsDto(
+    string EventId,
+    DateTimeOffset GeneratedAt,
+    int TotalMembers,
+    List<AdminCategoryResultDto> Categories
+);
+
+/// <summary>
 /// Single bootstrap payload for the admin control center. It lets the frontend
 /// hydrate every admin tab from one event-scoped contract instead of composing
 /// multiple independent requests on first load.
@@ -147,10 +194,12 @@ public record EventAdminBootstrapDto(
     EventAdminStateDto State,
     List<AwardCategoryDto> Categories,
     List<NomineeDto> Nominees,
+    List<AdminNomineeDto> AdminNominees,
     AdminProposalsHistoryDto Proposals,
     AdminVotesDto Votes,
     List<PublicUserDto> Members,
-    EventAdminSecretSantaStateDto SecretSanta
+    EventAdminSecretSantaStateDto SecretSanta,
+    AdminOfficialResultsDto OfficialResults
 );
 
 /// <summary>

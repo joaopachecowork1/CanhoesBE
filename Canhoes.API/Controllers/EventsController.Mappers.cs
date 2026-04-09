@@ -84,20 +84,24 @@ public sealed partial class EventsController
         var state = await BuildAdminStateDtoAsync(eventId, ct);
         var categories = await LoadAdminCategoriesAsync(eventId, ct);
         var nominees = await LoadAdminNomineeDtosAsync(eventId, null, ct);
+        var adminNominees = await LoadAdminNominationDtosAsync(eventId, null, ct);
         var proposals = await BuildAdminProposalsHistoryDtoAsync(eventId, ct);
         var votes = await BuildAdminVotesDtoAsync(eventId, ct);
         var members = await LoadAdminMembersAsync(eventId, ct);
         var secretSanta = await BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
+        var officialResults = await BuildAdminOfficialResultsDtoAsync(eventId, ct);
 
         return new EventAdminBootstrapDto(
             events,
             state,
             categories,
             nominees,
+            adminNominees,
             proposals,
             votes,
             members,
-            secretSanta
+            secretSanta,
+            officialResults
         );
     }
 
@@ -151,6 +155,60 @@ public sealed partial class EventsController
         return nominees.Select(ToNomineeDto).ToList();
     }
 
+    private async Task<List<AdminNomineeDto>> LoadAdminNominationDtosAsync(
+        string eventId,
+        string? normalizedStatus,
+        CancellationToken ct)
+    {
+        var query = _db.Nominees
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var nominees = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        var submittedByIds = nominees
+            .Select(x => x.SubmittedByUserId)
+            .Distinct()
+            .ToList();
+
+        var usersById = submittedByIds.Count == 0
+            ? new Dictionary<Guid, UserEntity>()
+            : await _db.Users
+                .AsNoTracking()
+                .Where(x => submittedByIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, ct);
+
+        return nominees.Select(entity =>
+        {
+            var submittedByName = usersById.TryGetValue(entity.SubmittedByUserId, out var user)
+                ? GetUserName(user)
+                : entity.SubmittedByUserId.ToString();
+
+            return ToAdminNomineeDto(entity, submittedByName);
+        }).ToList();
+    }
+
+    private async Task<AdminNomineeDto> BuildAdminNominationDtoAsync(
+        NomineeEntity entity,
+        CancellationToken ct)
+    {
+        var user = await _db.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == entity.SubmittedByUserId, ct);
+
+        return ToAdminNomineeDto(
+            entity,
+            user is null ? entity.SubmittedByUserId.ToString() : GetUserName(user)
+        );
+    }
+
     private async Task<AdminProposalsHistoryDto> BuildAdminProposalsHistoryDtoAsync(
         string eventId,
         CancellationToken ct)
@@ -194,6 +252,86 @@ public sealed partial class EventsController
             .ToListAsync(ct);
 
         return new AdminVotesDto(votes.Count, votes.Select(ToAdminVoteAuditRowDto).ToList());
+    }
+
+    private async Task<AdminOfficialResultsDto> BuildAdminOfficialResultsDtoAsync(
+        string eventId,
+        CancellationToken ct)
+    {
+        var categories = await _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote)
+            .OrderBy(x => x.SortOrder)
+            .ThenBy(x => x.Name)
+            .ToListAsync(ct);
+
+        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
+        var usersById = directory.UsersById;
+        var totalMembers = directory.Members
+            .Select(member => member.UserId)
+            .Distinct()
+            .Count();
+
+        var categoryIds = categories.Select(x => x.Id).ToList();
+        var userVotes = categoryIds.Count == 0
+            ? new List<UserVoteEntity>()
+            : await _db.UserVotes
+                .AsNoTracking()
+                .Where(x => categoryIds.Contains(x.CategoryId))
+                .ToListAsync(ct);
+
+        var resultCategories = categories.Select(category =>
+        {
+            var votesForCategory = userVotes
+                .Where(vote => vote.CategoryId == category.Id)
+                .ToList();
+
+            var nominees = votesForCategory
+                .GroupBy(vote => vote.TargetUserId)
+                .Select(group =>
+                {
+                    var nomineeTitle = usersById.TryGetValue(group.Key, out var nomineeUser)
+                        ? GetUserName(nomineeUser)
+                        : group.Key.ToString();
+
+                    var voterUserIds = group
+                        .Select(vote => usersById.TryGetValue(vote.VoterUserId, out var voterUser)
+                            ? GetUserName(voterUser)
+                            : vote.VoterUserId.ToString())
+                        .Distinct()
+                        .OrderBy(name => name)
+                        .ToList();
+
+                    return new AdminNomineeVoteTallyDto(
+                        group.Key.ToString(),
+                        nomineeTitle,
+                        null,
+                        group.Count(),
+                        voterUserIds
+                    );
+                })
+                .OrderByDescending(nominee => nominee.VoteCount)
+                .ThenBy(nominee => nominee.NomineeTitle)
+                .ToList();
+
+            var totalVotes = votesForCategory.Count;
+            var participationRate = totalMembers == 0 ? 0d : (double)totalVotes / totalMembers;
+
+            return new AdminCategoryResultDto(
+                category.Id,
+                category.Name,
+                totalVotes,
+                nominees,
+                participationRate
+            );
+        }).ToList();
+
+        return new AdminOfficialResultsDto(
+            eventId,
+            DateTimeOffset.UtcNow,
+            totalMembers,
+            resultCategories
+        );
     }
 
     private async Task<List<PublicUserDto>> LoadAdminMembersAsync(
@@ -252,6 +390,20 @@ public sealed partial class EventsController
             entity.ImageUrl,
             entity.Status,
             new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    private static AdminNomineeDto ToAdminNomineeDto(
+        NomineeEntity entity,
+        string submittedByName) =>
+        new(
+            entity.Id,
+            entity.CategoryId,
+            entity.Title,
+            entity.ImageUrl,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero),
+            entity.SubmittedByUserId,
+            submittedByName
         );
 
     private static CategoryProposalDto ToCategoryProposalDto(CategoryProposalEntity entity) =>
