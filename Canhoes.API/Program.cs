@@ -97,9 +97,9 @@ app.UseSwaggerUI();
 app.UseStaticFiles();
 
 app.UseAuthentication();
-// Injetamos o nosso Mock SE a flag estiver ativa
+// Mock auth is a local development escape hatch only.
 var useMockAuth = builder.Environment.IsDevelopment()
-    || builder.Configuration.GetValue<bool>("Auth:UseMockAuth");
+    && builder.Configuration.GetValue<bool>("Auth:UseMockAuth");
 if (useMockAuth)
 {
     app.UseMiddleware<MockAuthMiddleware>();
