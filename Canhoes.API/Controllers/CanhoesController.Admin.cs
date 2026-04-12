@@ -14,45 +14,33 @@ public partial class CanhoesController
         var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
         if (error is not null) return error;
 
-        var catsPending = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "pending")
+        // OPTIMIZATION: Load both tables in parallel (was sequential)
+        var catProposalsTask = _db.CategoryProposals.AsNoTracking()
+            .Where(p => p.EventId == activeEventId)
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
-        var catsApproved = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "approved")
+        var measureProposalsTask = _db.MeasureProposals.AsNoTracking()
+            .Where(p => p.EventId == activeEventId)
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
-        var catsRejected = await _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "rejected")
-            .OrderByDescending(p => p.CreatedAtUtc)
-            .ToListAsync(ct);
+        await Task.WhenAll(catProposalsTask, measureProposalsTask);
 
-        var measApproved = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "approved")
-            .OrderByDescending(p => p.CreatedAtUtc)
-            .ToListAsync(ct);
+        var allCatProposals = await catProposalsTask;
+        var allMeasureProposals = await measureProposalsTask;
 
-        var measPending = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "pending")
-            .OrderByDescending(p => p.CreatedAtUtc)
-            .ToListAsync(ct);
+        var catsPending = allCatProposals.Where(p => p.Status == "pending").Select(ToCategoryProposalDto);
+        var catsApproved = allCatProposals.Where(p => p.Status == "approved").Select(ToCategoryProposalDto);
+        var catsRejected = allCatProposals.Where(p => p.Status == "rejected").Select(ToCategoryProposalDto);
 
-        var measRejected = await _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "rejected")
-            .OrderByDescending(p => p.CreatedAtUtc)
-            .ToListAsync(ct);
+        var measPending = allMeasureProposals.Where(p => p.Status == "pending").Select(ToMeasureProposalDto);
+        var measApproved = allMeasureProposals.Where(p => p.Status == "approved").Select(ToMeasureProposalDto);
+        var measRejected = allMeasureProposals.Where(p => p.Status == "rejected").Select(ToMeasureProposalDto);
 
         var dto = new AdminProposalsHistoryDto(
-            new ProposalsByStatus<CategoryProposalDto>(
-                catsPending.Select(ToCategoryProposalDto),
-                catsApproved.Select(ToCategoryProposalDto),
-                catsRejected.Select(ToCategoryProposalDto)),
-            new ProposalsByStatus<MeasureProposalDto>(
-                measPending.Select(ToMeasureProposalDto),
-                measApproved.Select(ToMeasureProposalDto),
-                measRejected.Select(ToMeasureProposalDto)));
+            new ProposalsByStatus<CategoryProposalDto>(catsPending, catsApproved, catsRejected),
+            new ProposalsByStatus<MeasureProposalDto>(measPending, measApproved, measRejected));
 
         return Ok(dto);
     }
@@ -143,18 +131,27 @@ public partial class CanhoesController
         var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
         if (error is not null) return error;
 
-        var nominees = await _db.Nominees.AsNoTracking()
+        // OPTIMIZATION: Load all three tables in parallel (was sequential)
+        var nomineesTask = _db.Nominees.AsNoTracking()
             .Where(n => n.EventId == activeEventId && n.Status == "pending")
             .OrderByDescending(n => n.CreatedAtUtc)
             .ToListAsync(ct);
-        var cats = await _db.CategoryProposals.AsNoTracking()
+
+        var catProposalsTask = _db.CategoryProposals.AsNoTracking()
             .Where(p => p.EventId == activeEventId && p.Status == "pending")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
-        var meas = await _db.MeasureProposals.AsNoTracking()
+
+        var measureProposalsTask = _db.MeasureProposals.AsNoTracking()
             .Where(p => p.EventId == activeEventId && p.Status == "pending")
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
+
+        await Task.WhenAll(nomineesTask, catProposalsTask, measureProposalsTask);
+
+        var nominees = await nomineesTask;
+        var cats = await catProposalsTask;
+        var meas = await measureProposalsTask;
 
         return new PendingAdminDto(
             nominees.Select(ToNomineeDto).ToList(),

@@ -2,6 +2,7 @@ using Canhoes.Api.Access;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 
 namespace Canhoes.Api.Controllers;
@@ -9,6 +10,7 @@ namespace Canhoes.Api.Controllers;
 public partial class CanhoesController
 {
     [HttpGet("state")]
+    [OutputCache(PolicyName = "EventState", VaryByQueryKeys = new[] { "*" })]
     public async Task<ActionResult<CanhoesEventStateDto>> GetState(CancellationToken ct)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct);
@@ -19,6 +21,7 @@ public partial class CanhoesController
     }
 
     [HttpGet("categories")]
+    [OutputCache(PolicyName = "Categories", VaryByQueryKeys = new[] { "*" })]
     public async Task<ActionResult<List<AwardCategoryDto>>> GetCategories(CancellationToken ct)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct);
@@ -245,7 +248,12 @@ public partial class CanhoesController
         var nominees = await _db.Nominees.AsNoTracking()
             .Where(n => n.EventId == access.EventId && n.Status == "approved" && n.CategoryId != null)
             .ToListAsync(ct);
-        var votes = await _db.Votes.AsNoTracking().ToListAsync(ct);
+
+        // FIX: Filter votes by categoryIds to avoid loading ALL votes from ALL events
+        var categoryIds = categories.Select(c => c.Id).ToList();
+        var votes = await _db.Votes.AsNoTracking()
+            .Where(v => categoryIds.Contains(v.CategoryId))
+            .ToListAsync(ct);
 
         var result = new List<CanhoesCategoryResultDto>();
         foreach (var cat in categories)

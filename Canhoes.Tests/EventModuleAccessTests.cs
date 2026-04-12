@@ -73,6 +73,158 @@ public sealed class EventModuleAccessTests
         eventBSnapshot.EffectiveModules.Gala.Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData(EventPhaseTypes.Draw, true, true, false, false, false, false, false, false)]
+    [InlineData(EventPhaseTypes.Proposals, false, true, true, false, false, true, true, true)]
+    [InlineData(EventPhaseTypes.Voting, true, true, true, true, false, false, false, false)]
+    [InlineData(EventPhaseTypes.Results, true, true, true, false, true, false, false, true)]
+    public async Task EvaluateAsync_ShouldApplyCurrentMemberPhaseMatrix(
+        string activePhaseType,
+        bool secretSantaVisible,
+        bool wishlistVisible,
+        bool categoriesVisible,
+        bool votingVisible,
+        bool galaVisible,
+        bool stickersVisible,
+        bool measuresVisible,
+        bool nomineesVisible)
+    {
+        await using var db = CreateDbContext();
+        SeedEvent(db, "event-phase-matrix", isActive: true);
+        SeedState(db, "event-phase-matrix", activePhaseType, BuildVisibility());
+
+        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(
+            db,
+            "event-phase-matrix",
+            Guid.NewGuid(),
+            isAdmin: false,
+            CancellationToken.None);
+
+        snapshot.EffectiveModules.Feed.Should().BeTrue();
+        snapshot.EffectiveModules.SecretSanta.Should().Be(secretSantaVisible);
+        snapshot.EffectiveModules.Wishlist.Should().Be(wishlistVisible);
+        snapshot.EffectiveModules.Categories.Should().Be(categoriesVisible);
+        snapshot.EffectiveModules.Voting.Should().Be(votingVisible);
+        snapshot.EffectiveModules.Gala.Should().Be(galaVisible);
+        snapshot.EffectiveModules.Stickers.Should().Be(stickersVisible);
+        snapshot.EffectiveModules.Measures.Should().Be(measuresVisible);
+        snapshot.EffectiveModules.Nominees.Should().Be(nomineesVisible);
+        snapshot.EffectiveModules.Admin.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetAdminState_ShouldExposeMemberFacingEffectiveModules()
+    {
+        await using var db = CreateDbContext();
+        var adminId = Guid.NewGuid();
+        var memberId = Guid.NewGuid();
+
+        SeedEvent(db, "event-preview", isActive: true);
+        SeedState(
+            db,
+            "event-preview",
+            EventPhaseTypes.Proposals,
+            BuildVisibility(secretSanta: false, wishlist: false, voting: true));
+        SeedMember(db, "event-preview", memberId);
+
+        var adminController = CreateEventsController(db, adminId, isAdmin: true);
+        var memberController = CreateEventsController(db, memberId, isAdmin: false);
+
+        var adminStateResult = await adminController.GetAdminState("event-preview", CancellationToken.None);
+        var adminState = adminStateResult.Result.Should()
+            .BeOfType<OkObjectResult>()
+            .Subject.Value.Should()
+            .BeOfType<EventAdminStateDto>()
+            .Subject;
+
+        var overviewResult = await memberController.GetEventOverview("event-preview", CancellationToken.None);
+        var overview = overviewResult.Result.Should()
+            .BeOfType<OkObjectResult>()
+            .Subject.Value.Should()
+            .BeOfType<EventOverviewDto>()
+            .Subject;
+
+        adminState.EffectiveModules.Should().BeEquivalentTo(overview.Modules);
+        adminState.EffectiveModules.SecretSanta.Should().BeFalse();
+        adminState.EffectiveModules.Wishlist.Should().BeFalse();
+        adminState.EffectiveModules.Categories.Should().BeTrue();
+        adminState.EffectiveModules.Stickers.Should().BeTrue();
+        adminState.EffectiveModules.Voting.Should().BeFalse();
+        adminState.EffectiveModules.Admin.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetAdminState_ShouldKeepSecretSantaPreviewVisibleWhenDrawExists()
+    {
+        await using var db = CreateDbContext();
+        var adminId = Guid.NewGuid();
+        var memberId = Guid.NewGuid();
+
+        SeedEvent(db, "event-secret-santa", isActive: true);
+        SeedState(db, "event-secret-santa", EventPhaseTypes.Proposals, BuildVisibility());
+        SeedMember(db, "event-secret-santa", memberId);
+        db.SecretSantaDraws.Add(new SecretSantaDrawEntity
+        {
+            Id = "draw-1",
+            EventCode = "event-secret-santa",
+            CreatedAtUtc = DateTime.UtcNow,
+            CreatedByUserId = adminId,
+            IsLocked = true,
+        });
+        db.SaveChanges();
+
+        var adminController = CreateEventsController(db, adminId, isAdmin: true);
+        var memberController = CreateEventsController(db, memberId, isAdmin: false);
+
+        var adminStateResult = await adminController.GetAdminState("event-secret-santa", CancellationToken.None);
+        var adminState = adminStateResult.Result.Should()
+            .BeOfType<OkObjectResult>()
+            .Subject.Value.Should()
+            .BeOfType<EventAdminStateDto>()
+            .Subject;
+
+        var overviewResult = await memberController.GetEventOverview("event-secret-santa", CancellationToken.None);
+        var overview = overviewResult.Result.Should()
+            .BeOfType<OkObjectResult>()
+            .Subject.Value.Should()
+            .BeOfType<EventOverviewDto>()
+            .Subject;
+
+        adminState.EffectiveModules.SecretSanta.Should().BeTrue();
+        adminState.EffectiveModules.Should().BeEquivalentTo(overview.Modules);
+    }
+
+    [Fact]
+    public async Task GetEventOverview_ShouldCloseVotingPermissionsWhenPhaseWindowHasEnded()
+    {
+        await using var db = CreateDbContext();
+        var memberId = Guid.NewGuid();
+
+        SeedEvent(db, "event-expired-window", isActive: true);
+        SeedState(db, "event-expired-window", EventPhaseTypes.Voting, BuildVisibility());
+        SeedMember(db, "event-expired-window", memberId);
+
+        var votingPhase = await db.EventPhases.FirstAsync(
+            phase => phase.EventId == "event-expired-window" && phase.Type == EventPhaseTypes.Voting);
+        votingPhase.StartDateUtc = DateTime.UtcNow.AddDays(-2);
+        votingPhase.EndDateUtc = DateTime.UtcNow.AddMinutes(-5);
+        await db.SaveChangesAsync();
+
+        var controller = CreateEventsController(db, memberId, isAdmin: false);
+
+        var result = await controller.GetEventOverview("event-expired-window", CancellationToken.None);
+        var overview = result.Result.Should()
+            .BeOfType<OkObjectResult>()
+            .Subject.Value.Should()
+            .BeOfType<EventOverviewDto>()
+            .Subject;
+
+        overview.ActivePhase.Should().NotBeNull();
+        overview.ActivePhase!.Type.Should().Be(EventPhaseTypes.Voting);
+        overview.Modules.Voting.Should().BeTrue();
+        overview.Permissions.CanVote.Should().BeFalse();
+    }
+
     [Fact]
     public async Task GetOrCreateEventStateAsync_ShouldCreateIndependentRowsPerEvent()
     {
@@ -273,7 +425,7 @@ public sealed class EventModuleAccessTests
             AuthorUserId = userId,
             Text = "Post principal",
             MediaUrl = null,
-            MediaUrlsJson = null,
+            MediaUrlsJson = "[]",
             IsPinned = false,
             CreatedAtUtc = DateTime.UtcNow
         });

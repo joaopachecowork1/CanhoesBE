@@ -190,5 +190,85 @@ public class CanhoesDbContext : DbContext
             e.HasIndex(x => x.PostId);
             e.HasIndex(x => x.Url).IsUnique();
         });
+
+        // -----------------
+        // Performance indexes (added during performance audit)
+        // -----------------
+
+        // VoteEntity: queries filter by UserId and lookup by NomineeId
+        modelBuilder.Entity<VoteEntity>()
+            .HasIndex(x => x.UserId)
+            .HasDatabaseName("IX_Votes_UserId");
+
+        modelBuilder.Entity<VoteEntity>()
+            .HasIndex(x => x.NomineeId)
+            .HasDatabaseName("IX_Votes_NomineeId");
+
+        // UserVoteEntity: queries lookup by TargetUserId
+        modelBuilder.Entity<UserVoteEntity>()
+            .HasIndex(x => x.TargetUserId)
+            .HasDatabaseName("IX_UserVotes_TargetUserId");
+
+        // NomineeEntity: queries lookup by SubmittedByUserId
+        modelBuilder.Entity<NomineeEntity>()
+            .HasIndex(x => x.SubmittedByUserId)
+            .HasDatabaseName("IX_Nominees_SubmittedByUserId");
+
+        // WishlistItemEntity: queries filter by EventId and UserId
+        modelBuilder.Entity<WishlistItemEntity>()
+            .HasIndex(x => x.EventId)
+            .HasDatabaseName("IX_WishlistItems_EventId");
+
+        modelBuilder.Entity<WishlistItemEntity>()
+            .HasIndex(x => x.UserId)
+            .HasDatabaseName("IX_WishlistItems_UserId");
+
+        // SecretSantaDrawEntity: queries filter by EventCode
+        modelBuilder.Entity<SecretSantaDrawEntity>()
+            .HasIndex(x => x.EventCode)
+            .HasDatabaseName("IX_SecretSantaDraws_EventCode");
+
+        // SecretSantaAssignmentEntity: queries join by DrawId, GiverUserId, ReceiverUserId
+        modelBuilder.Entity<SecretSantaAssignmentEntity>()
+            .HasIndex(x => x.DrawId)
+            .HasDatabaseName("IX_SecretSantaAssignments_DrawId");
+
+        modelBuilder.Entity<SecretSantaAssignmentEntity>()
+            .HasIndex(x => x.GiverUserId)
+            .HasDatabaseName("IX_SecretSantaAssignments_GiverUserId");
+
+        modelBuilder.Entity<SecretSantaAssignmentEntity>()
+            .HasIndex(x => x.ReceiverUserId)
+            .HasDatabaseName("IX_SecretSantaAssignments_ReceiverUserId");
+
+        // HubPostEntity: queries join by AuthorUserId
+        modelBuilder.Entity<HubPostEntity>()
+            .HasIndex(x => x.AuthorUserId)
+            .HasDatabaseName("IX_HubPosts_AuthorUserId");
+
+        // HubPostPollVoteEntity: queries filter by UserId (composite already exists, add single column)
+        modelBuilder.Entity<HubPostPollVoteEntity>()
+            .HasIndex(x => x.UserId)
+            .HasDatabaseName("IX_HubPostPollVotes_UserId");
+
+        // AwardCategoryEntity: queries filter by IsActive
+        modelBuilder.Entity<AwardCategoryEntity>()
+            .HasIndex(x => x.IsActive)
+            .HasDatabaseName("IX_AwardCategories_IsActive");
+
+        // GalaMeasureEntity: queries filter by IsActive
+        modelBuilder.Entity<GalaMeasureEntity>()
+            .HasIndex(x => x.IsActive)
+            .HasDatabaseName("IX_Measures_IsActive");
+
+        // CategoryProposalEntity: queries lookup by ProposedByUserId
+        modelBuilder.Entity<CategoryProposalEntity>()
+            .HasIndex(x => x.ProposedByUserId)
+            .HasDatabaseName("IX_CategoryProposals_ProposedByUserId");
+
+        // MeasureProposalEntity: queries lookup by ProposedByUserId
+        modelBuilder.Entity<MeasureProposalEntity>()
+            .HasIndex(x => x.ProposedByUserId)
+            .HasDatabaseName("IX_MeasureProposals_ProposedByUserId");
     }
 }

@@ -23,14 +23,14 @@ public sealed partial class EventsController
     {
         var legacyState = await GetOrCreateEventStateAsync(eventId, ct);
         var phases = await LoadEventPhasesAsync(eventId, ct);
-        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(
+        var memberModuleAccess = await EventModuleAccessEvaluator.EvaluateAsync(
             _db,
             eventId,
             Guid.Empty,
-            isAdmin: true,
+            isAdmin: false,
             ct);
 
-        var activePhaseEntity = moduleAccess.ActivePhase ?? phases.FirstOrDefault(x => x.IsActive);
+        var activePhaseEntity = memberModuleAccess.ActivePhase ?? phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
 
         return new EventAdminStateDto(
@@ -39,8 +39,8 @@ public sealed partial class EventsController
             phases.Select(ToEventPhaseDto).ToList(),
             legacyState.NominationsVisible,
             legacyState.ResultsVisible,
-            moduleAccess.ModuleVisibility,
-            moduleAccess.EffectiveModules,
+            memberModuleAccess.ModuleVisibility,
+            memberModuleAccess.EffectiveModules,
             await BuildAdminCountsDtoAsync(eventId, ct)
         );
     }
