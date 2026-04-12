@@ -281,6 +281,37 @@ public sealed partial class HubController
         return Ok(new { liked });
     }
 
+    [HttpPost("posts/{postId}/downvote")]
+    public async Task<ActionResult<object>> ToggleDownvote([FromRoute] string postId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+
+        var (access, error) = await RequireFeedAccessAsync(ct);
+        if (error is not null) return error;
+        if (!await PostExistsInActiveEventAsync(access.EventId, postId, ct)) return NotFound();
+
+        var existing = await _db.HubPostDownvotes
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
+
+        var downvoted = existing is null;
+        if (existing is null)
+        {
+            _db.HubPostDownvotes.Add(new HubPostDownvoteEntity
+            {
+                PostId = postId,
+                UserId = access.UserId,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            _db.HubPostDownvotes.Remove(existing);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { downvoted });
+    }
+
     [HttpPost("posts/{postId}/reactions")]
     public async Task<ActionResult<object>> ToggleReaction([FromRoute] string postId, [FromBody] ToggleReactionRequest req, CancellationToken ct = default)
     {

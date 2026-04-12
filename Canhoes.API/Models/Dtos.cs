@@ -15,6 +15,18 @@ public record AwardCategoryDto(
     string? VoteRules
 );
 
+/// <summary>
+/// Lightweight category summary for list views — omits VoteQuestion, VoteRules
+/// and Description to reduce payload size in dropdowns and navigation.
+/// </summary>
+public record AwardCategorySummaryDto(
+    string Id,
+    string Name,
+    int SortOrder,
+    bool IsActive,
+    string Kind
+);
+
 public record CreateAwardCategoryRequest(
     string Name,
     int? SortOrder,
@@ -49,6 +61,17 @@ public record NomineeDto(
     string? ImageUrl,
     string Status,
     DateTimeOffset CreatedAtUtc
+);
+
+/// <summary>
+/// Lightweight nominee summary for list views — omits ImageUrl and timestamp
+/// to reduce payload size in tables and queues.
+/// </summary>
+public record NomineeSummaryDto(
+    string Id,
+    string? CategoryId,
+    string Title,
+    string Status
 );
 
 public record CreateNomineeRequest(
@@ -98,6 +121,19 @@ public record SetNomineeCategoryRequest(string? CategoryId);
 
 public record AdminVoteAuditRowDto(
     string CategoryId,
+    string CategoryName,
+    string NomineeId,
+    Guid UserId,
+    string UserName,
+    DateTimeOffset UpdatedAtUtc
+);
+
+/// <summary>
+/// Legacy vote audit row — kept for backward compatibility.
+/// Prefer AdminVoteAuditRowDto for new endpoints.
+/// </summary>
+public record AdminVoteAuditRowLegacyDto(
+    string CategoryId,
     string NomineeId,
     Guid UserId,
     DateTimeOffset UpdatedAtUtc
@@ -133,6 +169,77 @@ public record CastVoteRequest(string CategoryId, string NomineeId);
 
 public record CanhoesEventStateDto(string Phase, bool NominationsVisible, bool ResultsVisible);
 
+/// <summary>
+/// Generic paginated result for list endpoints.
+/// </summary>
+public record PagedResult<T>(
+    List<T> Items,
+    int Total,
+    int Skip,
+    int Take,
+    bool HasMore
+)
+{
+    public static PagedResult<T> Empty(int skip = 0, int take = 20) =>
+        new([], 0, skip, take, false);
+}
+
+/// <summary>
+/// Pagination parameters for list endpoints.
+/// </summary>
+public record PageRequest(
+    int Skip = 0,
+    int Take = 50
+);
+
+/// <summary>
+/// Paginated votes audit payload. Replaces the unbounded AdminVotesDto
+/// for large events while keeping backward compatibility.
+/// </summary>
+public record AdminVotesPagedDto(
+    int Total,
+    List<AdminVoteAuditRowDto> Votes,
+    int Skip,
+    int Take,
+    bool HasMore
+);
+
+/// <summary>
+/// Paginated nominations payload for the admin panel.
+/// </summary>
+public record AdminNomineesPagedDto(
+    int Total,
+    List<AdminNomineeDto> Nominations,
+    int Skip,
+    int Take,
+    bool HasMore
+);
+
+/// <summary>
+/// Paginated proposals history payload.
+/// </summary>
+public record AdminProposalsPagedDto(
+    int CategoryProposalsTotal,
+    ProposalsByStatusDto<CategoryProposalDto> CategoryProposals,
+    int MeasureProposalsTotal,
+    ProposalsByStatusDto<MeasureProposalDto> MeasureProposals
+);
+
+/// <summary>
+/// Counts-only payload for the admin bootstrap. Replaces full lists in the
+/// bootstrap so the frontend can lazy-load each section on demand.
+/// </summary>
+public record AdminListCountsDto(
+    int NomineesTotal,
+    int AdminNomineesTotal,
+    int VotesTotal,
+    int CategoryProposalsTotal,
+    int CategoryProposalsPendingTotal,
+    int MeasureProposalsTotal,
+    int MeasureProposalsPendingTotal,
+    int MembersTotal,
+    int OfficialResultsCategoriesCount
+);
 
 public record WishlistItemDto(
     string Id,

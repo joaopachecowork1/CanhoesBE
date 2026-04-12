@@ -153,6 +153,19 @@ public record AdminNomineeDto(
 );
 
 /// <summary>
+/// Lightweight nomination summary for the admin moderation queue — omits
+/// ImageUrl and timestamp to reduce payload size in the queue list.
+/// </summary>
+public record AdminNomineeSummaryDto(
+    string Id,
+    string? CategoryId,
+    string Title,
+    string Status,
+    Guid SubmittedByUserId,
+    string SubmittedByName
+);
+
+/// <summary>
 /// Vote tally for one person/category entry in the official results screen.
 /// </summary>
 public record AdminNomineeVoteTallyDto(
@@ -185,21 +198,23 @@ public record AdminOfficialResultsDto(
 );
 
 /// <summary>
-/// Single bootstrap payload for the admin control center. It lets the frontend
-/// hydrate every admin tab from one event-scoped contract instead of composing
-/// multiple independent requests on first load.
+/// Single bootstrap payload for the admin control center. Lists are now
+/// optional — the default response contains only counts so the frontend can
+/// lazy-load each section on demand. Passing includeLists=true returns the
+/// full lists for backward compatibility.
 /// </summary>
 public record EventAdminBootstrapDto(
     List<EventSummaryDto> Events,
     EventAdminStateDto State,
-    List<AwardCategoryDto> Categories,
-    List<NomineeDto> Nominees,
-    List<AdminNomineeDto> AdminNominees,
-    AdminProposalsHistoryDto Proposals,
-    AdminVotesDto Votes,
-    List<PublicUserDto> Members,
-    EventAdminSecretSantaStateDto SecretSanta,
-    AdminOfficialResultsDto OfficialResults
+    AdminListCountsDto Counts,
+    List<AwardCategoryDto>? Categories = null,
+    List<NomineeDto>? Nominees = null,
+    List<AdminNomineeDto>? AdminNominees = null,
+    AdminProposalsHistoryDto? Proposals = null,
+    AdminVotesDto? Votes = null,
+    List<PublicUserDto>? Members = null,
+    EventAdminSecretSantaStateDto? SecretSanta = null,
+    AdminOfficialResultsDto? OfficialResults = null
 );
 
 /// <summary>
@@ -274,6 +289,57 @@ public record EventFeedPostDto(
     List<string> MediaUrls,
     DateTimeOffset CreatedAt
 );
+
+/// <summary>
+/// Full-featured feed post DTO — mirrors HubPostDto with all engagement fields
+/// so the event-scoped feed can replace the legacy /hub/ endpoints completely.
+/// </summary>
+public record EventFeedPostFullDto(
+    string Id,
+    string EventId,
+    string AuthorUserId,
+    string AuthorName,
+    string Text,
+    string? MediaUrl,
+    List<string> MediaUrls,
+    bool IsPinned,
+    DateTimeOffset CreatedAtUtc,
+    int LikeCount,
+    int CommentCount,
+    int DownvoteCount,
+    Dictionary<string, int> ReactionCounts,
+    List<string> MyReactions,
+    bool LikedByMe,
+    bool DownvotedByMe,
+    EventFeedPollDto? Poll
+);
+
+public record EventFeedPollDto(
+    string Question,
+    List<EventFeedPollOptionDto> Options,
+    string? MyOptionId,
+    int TotalVotes
+);
+
+public record EventFeedPollOptionDto(
+    string Id,
+    string Text,
+    int VoteCount
+);
+
+public record CreateEventFeedPostRequest(
+    string Text,
+    string? MediaUrl = null,
+    List<string>? MediaUrls = null,
+    string? PollQuestion = null,
+    List<string>? PollOptions = null
+);
+
+public record VoteEventFeedPollRequest(string OptionId);
+
+public record CreateEventFeedCommentRequest(string Text);
+
+public record ToggleEventFeedReactionRequest(string? Emoji);
 
 public record CreateEventPostRequest(
     string Content,

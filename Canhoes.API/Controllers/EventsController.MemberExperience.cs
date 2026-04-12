@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Canhoes.Api.Access;
+using Canhoes.Api.DTOs;
 using Canhoes.Api.Media;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -9,6 +10,436 @@ namespace Canhoes.Api.Controllers;
 
 public sealed partial class EventsController
 {
+    private const string DefaultFeedReactionEmoji = "\u2764\uFE0F";
+
+    private static string NormalizeFeedReactionEmoji(string? emoji)
+    {
+        var value = string.IsNullOrWhiteSpace(emoji) ? DefaultFeedReactionEmoji : emoji.Trim();
+        return value.Length > 16 ? value[..16] : value;
+    }
+
+    private Task<bool> FeedPostExistsInEventAsync(string eventId, string postId, CancellationToken ct) =>
+        _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+
+    // ========================================================================
+    // FEED INTERACTION ENDPOINTS (replaces HubController functionality)
+    // ========================================================================
+
+    [HttpPost("{eventId}/feed/posts/{postId}/like")]
+    public async Task<ActionResult<object>> ToggleFeedLike([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var existing = await _db.HubPostReactions
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == DefaultFeedReactionEmoji, ct);
+
+        var liked = existing is null;
+        if (existing is null)
+        {
+            _db.HubPostReactions.Add(new HubPostReactionEntity
+            {
+                PostId = postId,
+                UserId = access.UserId,
+                Emoji = DefaultFeedReactionEmoji,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            _db.HubPostReactions.Remove(existing);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { liked });
+    }
+
+    [HttpPost("{eventId}/feed/posts/{postId}/downvote")]
+    public async Task<ActionResult<object>> ToggleFeedDownvote([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var existing = await _db.HubPostDownvotes
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
+
+        var downvoted = existing is null;
+        if (existing is null)
+        {
+            _db.HubPostDownvotes.Add(new HubPostDownvoteEntity
+            {
+                PostId = postId,
+                UserId = access.UserId,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            _db.HubPostDownvotes.Remove(existing);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { downvoted });
+    }
+
+    [HttpPost("{eventId}/feed/posts/{postId}/reactions")]
+    public async Task<ActionResult<object>> ToggleFeedReaction([FromRoute] string eventId, [FromRoute] string postId, [FromBody] ToggleEventFeedReactionRequest? req, CancellationToken ct)
+    {
+        return await ToggleFeedReactionInternalAsync(eventId, postId, NormalizeFeedReactionEmoji(req?.Emoji), ct);
+    }
+
+    private async Task<ActionResult<object>> ToggleFeedReactionInternalAsync(string eventId, string postId, string emoji, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var existing = await _db.HubPostReactions
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == emoji, ct);
+
+        var active = existing is null;
+        if (existing is null)
+        {
+            _db.HubPostReactions.Add(new HubPostReactionEntity
+            {
+                PostId = postId,
+                UserId = access.UserId,
+                Emoji = emoji,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            _db.HubPostReactions.Remove(existing);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { emoji, active });
+    }
+
+    [HttpGet("{eventId}/feed/posts/{postId}/comments")]
+    public async Task<ActionResult<List<HubCommentDto>>> GetFeedComments([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest();
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        return Ok(await LoadFeedCommentDtosAsync(postId, access.UserId, ct));
+    }
+
+    [HttpPost("{eventId}/feed/posts/{postId}/comments")]
+    public async Task<ActionResult<HubCommentDto>> CreateFeedComment([FromRoute] string eventId, [FromRoute] string postId, [FromBody] CreateEventFeedCommentRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+        if (string.IsNullOrWhiteSpace(req?.Text)) return BadRequest("Text is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var comment = new HubPostCommentEntity
+        {
+            Id = Guid.NewGuid().ToString(),
+            PostId = postId,
+            UserId = access.UserId,
+            Text = req.Text.Trim(),
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        _db.HubPostComments.Add(comment);
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(await BuildCreatedFeedCommentDtoAsync(comment, ct));
+    }
+
+    [HttpDelete("{eventId}/feed/posts/{postId}/comments/{commentId}")]
+    public async Task<ActionResult> DeleteFeedComment([FromRoute] string eventId, [FromRoute] string postId, [FromRoute] string commentId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+        if (string.IsNullOrWhiteSpace(commentId)) return BadRequest("commentId is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+
+        var comment = await _db.HubPostComments
+            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
+        if (comment is null) return NotFound();
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+        if (comment.UserId != access.UserId && !access.IsAdmin) return Forbid();
+
+        var commentReactions = _db.HubPostCommentReactions.Where(x => x.CommentId == commentId);
+        _db.HubPostCommentReactions.RemoveRange(commentReactions);
+        _db.HubPostComments.Remove(comment);
+
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpPost("{eventId}/feed/posts/{postId}/comments/{commentId}/reactions")]
+    public async Task<ActionResult<object>> ToggleFeedCommentReaction([FromRoute] string eventId, [FromRoute] string postId, [FromRoute] string commentId, [FromBody] ToggleEventFeedReactionRequest? req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+        if (string.IsNullOrWhiteSpace(commentId)) return BadRequest("commentId is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+
+        var comment = await _db.HubPostComments
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
+        if (comment is null) return NotFound();
+        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var emoji = NormalizeFeedReactionEmoji(req?.Emoji);
+        var existing = await _db.HubPostCommentReactions
+            .SingleOrDefaultAsync(x => x.CommentId == commentId && x.UserId == access.UserId && x.Emoji == emoji, ct);
+
+        var active = existing is null;
+        if (existing is null)
+        {
+            _db.HubPostCommentReactions.Add(new HubPostCommentReactionEntity
+            {
+                Id = Guid.NewGuid().ToString(),
+                CommentId = commentId,
+                UserId = access.UserId,
+                Emoji = emoji,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            _db.HubPostCommentReactions.Remove(existing);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { emoji, active });
+    }
+
+    [HttpPost("{eventId}/feed/posts/{postId}/poll/vote")]
+    public async Task<ActionResult<object>> VoteFeedPoll([FromRoute] string eventId, [FromRoute] string postId, [FromBody] VoteEventFeedPollRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+        if (req is null || string.IsNullOrWhiteSpace(req.OptionId)) return BadRequest("optionId is required.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+
+        var pollExists = await _db.HubPostPolls.AnyAsync(x => x.PostId == postId, ct)
+            && await FeedPostExistsInEventAsync(eventId, postId, ct);
+        if (!pollExists) return NotFound();
+
+        var optionId = req.OptionId.Trim();
+        var optionExists = await _db.HubPostPollOptions.AnyAsync(x => x.Id == optionId && x.PostId == postId, ct);
+        if (!optionExists) return BadRequest("Invalid optionId.");
+
+        var existing = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
+        if (existing is null)
+        {
+            _db.HubPostPollVotes.Add(new HubPostPollVoteEntity
+            {
+                Id = Guid.NewGuid().ToString(),
+                PostId = postId,
+                UserId = access.UserId,
+                OptionId = optionId,
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            existing.OptionId = optionId;
+            existing.CreatedAtUtc = DateTime.UtcNow;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { optionId });
+    }
+
+    [HttpPost("{eventId}/feed/posts/{postId}/pin")]
+    public async Task<ActionResult<object>> ToggleFeedPostPin([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+
+        var (access, _, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (post is null) return NotFound();
+
+        post.IsPinned = !post.IsPinned;
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new { pinned = post.IsPinned });
+    }
+
+    [HttpDelete("{eventId}/feed/posts/{postId}")]
+    public async Task<ActionResult> DeleteFeedPost([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
+
+        var (access, _, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (error is not null) return error;
+
+        var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (post is null) return NotFound();
+
+        // Cascade delete
+        var postReactions = _db.HubPostReactions.Where(x => x.PostId == postId);
+        _db.HubPostReactions.RemoveRange(postReactions);
+
+        var postDownvotes = _db.HubPostDownvotes.Where(x => x.PostId == postId);
+        _db.HubPostDownvotes.RemoveRange(postDownvotes);
+
+        var postMedia = _db.HubPostMedia.Where(x => x.PostId == postId);
+        _db.HubPostMedia.RemoveRange(postMedia);
+
+        var postPolls = _db.HubPostPolls.Where(x => x.PostId == postId);
+        _db.HubPostPolls.RemoveRange(postPolls);
+
+        var postPollOptions = _db.HubPostPollOptions.Where(x => x.PostId == postId);
+        _db.HubPostPollOptions.RemoveRange(postPollOptions);
+
+        var postPollVotes = _db.HubPostPollVotes.Where(x => x.PostId == postId);
+        _db.HubPostPollVotes.RemoveRange(postPollVotes);
+
+        var comments = _db.HubPostComments.Where(x => x.PostId == postId);
+        _db.HubPostComments.RemoveRange(comments);
+
+        var commentReactions = _db.HubPostCommentReactions.Where(x => x.Comment.PostId == postId);
+        _db.HubPostCommentReactions.RemoveRange(commentReactions);
+
+        _db.HubPosts.Remove(post);
+        await _db.SaveChangesAsync(ct);
+
+        return NoContent();
+    }
+
+    [HttpPost("{eventId}/feed/uploads")]
+    [RequestSizeLimit(25_000_000)]
+    public async Task<ActionResult<List<string>>> UploadFeedImages([FromRoute] string eventId, IFormFileCollection files, CancellationToken ct)
+    {
+        if (files is null || files.Count == 0) return BadRequest("No files uploaded.");
+
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (error is not null) return error;
+
+        return Ok(await SaveFeedUploadedFilesAsync(files, access.UserId, ct));
+    }
+
+    // ========================================================================
+    // FEED SUPPORT METHODS
+    // ========================================================================
+
+    private async Task<List<HubCommentDto>> LoadFeedCommentDtosAsync(string postId, Guid userId, CancellationToken ct)
+    {
+        var comments = await _db.HubPostComments
+            .AsNoTracking()
+            .Where(x => x.PostId == postId)
+            .OrderBy(x => x.CreatedAtUtc)
+            .ToListAsync(ct);
+
+        if (comments.Count == 0) return new List<HubCommentDto>();
+
+        var commentIds = comments.Select(c => c.Id).ToList();
+        var reactions = await _db.HubPostCommentReactions
+            .AsNoTracking()
+            .Where(x => commentIds.Contains(x.CommentId))
+            .Select(x => new { x.CommentId, x.UserId, x.Emoji })
+            .ToListAsync(ct);
+
+        var userIds = comments.Select(c => c.UserId).Distinct().ToList();
+        var users = await _db.Users.AsNoTracking()
+            .Where(u => userIds.Contains(u.Id))
+            .Select(u => new { u.Id, Name = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName! })
+            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+
+        return comments.Select(comment => new HubCommentDto(
+            comment.Id,
+            comment.PostId,
+            comment.UserId,
+            users.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
+            comment.Text,
+            comment.CreatedAtUtc,
+            reactions.Where(r => r.CommentId == comment.Id)
+                .GroupBy(r => r.Emoji)
+                .ToDictionary(g => g.Key, g => g.Count()),
+            userId == Guid.Empty ? new List<string>() :
+                reactions.Where(r => r.CommentId == comment.Id && r.UserId == userId)
+                    .Select(r => r.Emoji).Distinct().ToList()
+        )).ToList();
+    }
+
+    private async Task<HubCommentDto> BuildCreatedFeedCommentDtoAsync(HubPostCommentEntity comment, CancellationToken ct)
+    {
+        var displayName = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == comment.UserId)
+            .Select(u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName!)
+            .SingleOrDefaultAsync(ct);
+
+        return new HubCommentDto(
+            comment.Id,
+            comment.PostId,
+            comment.UserId,
+            displayName ?? "Unknown",
+            comment.Text,
+            comment.CreatedAtUtc,
+            new Dictionary<string, int>(),
+            new List<string>());
+    }
+
+    private async Task<List<string>> SaveFeedUploadedFilesAsync(IFormFileCollection files, Guid userId, CancellationToken ct)
+    {
+        var webRoot = _env?.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+        var hubDir = Path.Combine(webRoot, "uploads", "hub");
+        Directory.CreateDirectory(hubDir);
+
+        var urls = new List<string>();
+        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
+
+        foreach (var file in files.Take(10))
+        {
+            if (file.Length <= 0) continue;
+
+            var ext = Path.GetExtension(file.FileName);
+            if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+            if (!allowedExtensions.Contains(ext.ToLowerInvariant())) continue;
+
+            var fileName = $"{Guid.NewGuid():N}{ext}";
+            var abs = Path.Combine(hubDir, fileName);
+
+            await using var input = file.OpenReadStream();
+            await using var output = new FileStream(abs, FileMode.Create);
+            await input.CopyToAsync(output, ct);
+
+            var url = $"/uploads/hub/{fileName}";
+            urls.Add(url);
+
+            _db.HubPostMedia.Add(new HubPostMediaEntity
+            {
+                Id = Guid.NewGuid().ToString(),
+                Url = url,
+                PostId = null,
+                OriginalFileName = file.FileName,
+                FileSizeBytes = file.Length,
+                UploadedByUserId = userId == Guid.Empty ? null : userId,
+                ContentType = string.IsNullOrWhiteSpace(file.ContentType) ? null : file.ContentType,
+                UploadedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        if (urls.Count > 0) await _db.SaveChangesAsync(ct);
+        return urls;
+    }
+
     [HttpGet("{eventId}/voting/overview")]
     public async Task<ActionResult<EventVotingOverviewDto>> GetVotingOverview([FromRoute] string eventId, CancellationToken ct)
     {

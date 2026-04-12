@@ -133,11 +133,14 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/admin/bootstrap")]
-    public async Task<ActionResult<EventAdminBootstrapDto>> GetAdminBootstrap([FromRoute] string eventId, CancellationToken ct)
+    public async Task<ActionResult<EventAdminBootstrapDto>> GetAdminBootstrap(
+        [FromRoute] string eventId,
+        [FromQuery] bool includeLists = false,
+        CancellationToken ct = default)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
 
-        return Ok(await BuildAdminBootstrapDtoAsync(eventId, ct));
+        return Ok(await BuildAdminBootstrapDtoAsync(eventId, includeLists, ct));
     }
 
     [HttpPut("{eventId}/admin/state")]
@@ -670,5 +673,118 @@ public sealed partial class EventsController
         await _db.SaveChangesAsync(ct);
 
         return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
+    }
+
+    // ---------- Paginated endpoints ----------
+
+    [HttpGet("{eventId}/admin/votes/paged")]
+    public async Task<ActionResult<AdminVotesPagedDto>> AdminVotesPaged(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        return Ok(await BuildAdminVotesPagedDtoAsync(eventId, skip, take, ct));
+    }
+
+    [HttpGet("{eventId}/admin/nominations/paged")]
+    public async Task<ActionResult<AdminNomineesPagedDto>> AdminNominationsPaged(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        [FromQuery] string? status = null,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+
+        return Ok(await BuildAdminNominationsPagedDtoAsync(eventId, normalizedStatus, skip, take, ct));
+    }
+
+    [HttpGet("{eventId}/admin/proposals/paged")]
+    public async Task<ActionResult<AdminProposalsPagedDto>> AdminProposalsPaged(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        return Ok(await BuildAdminProposalsPagedDtoAsync(eventId, skip, take, ct));
+    }
+
+    [HttpGet("{eventId}/admin/members/paged")]
+    public async Task<ActionResult<PagedResult<PublicUserDto>>> AdminMembersPaged(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        return Ok(await LoadAdminMembersPagedAsync(eventId, skip, take, ct));
+    }
+
+    [HttpGet("{eventId}/admin/official-results/paged")]
+    public async Task<ActionResult<PagedResult<AdminCategoryResultDto>>> AdminOfficialResultsPaged(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        return Ok(await BuildAdminOfficialResultsPagedDtoAsync(eventId, skip, take, ct));
+    }
+
+    [HttpGet("{eventId}/admin/categories/summary")]
+    public async Task<ActionResult<List<AwardCategorySummaryDto>>> AdminCategoriesSummary(
+        [FromRoute] string eventId,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        return Ok(await LoadAdminCategoriesSummaryAsync(eventId, ct));
+    }
+
+    [HttpGet("{eventId}/admin/nominees/summary")]
+    public async Task<ActionResult<List<NomineeSummaryDto>>> AdminNomineesSummary(
+        [FromRoute] string eventId,
+        [FromQuery] string? status = null,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        return Ok(await LoadAdminNomineesSummaryAsync(eventId, normalizedStatus, ct));
+    }
+
+    [HttpGet("{eventId}/admin/nominations/summary")]
+    public async Task<ActionResult<List<AdminNomineeSummaryDto>>> AdminNominationsSummary(
+        [FromRoute] string eventId,
+        [FromQuery] string? status = null,
+        CancellationToken ct = default)
+    {
+        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        return Ok(await LoadAdminNominationsSummaryAsync(eventId, normalizedStatus, ct));
     }
 }

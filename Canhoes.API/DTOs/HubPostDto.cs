@@ -25,10 +25,12 @@ public sealed class HubPostDto
 
     public int LikeCount { get; init; }
     public int CommentCount { get; init; }
+    public int DownvoteCount { get; init; }
 
     public Dictionary<string, int> ReactionCounts { get; init; } = new();
     public List<string> MyReactions { get; init; } = new();
     public bool LikedByMe { get; init; }
+    public bool DownvotedByMe { get; init; }
 
     // Optional poll (single-choice, can change vote)
     public HubPollDto? Poll { get; init; }

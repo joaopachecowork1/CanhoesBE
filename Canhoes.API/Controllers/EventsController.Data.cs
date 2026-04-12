@@ -68,6 +68,44 @@ public sealed partial class EventsController
             .OrderBy(x => x.StartDateUtc)
             .ToListAsync(ct);
 
+    /// <summary>
+    /// Consolidated counts query to replace 4+ individual CountAsync calls.
+    /// Returns memberCount, hubPostCount, pendingCategoryProposalsCount, and wishlistCount
+    /// in a single round-trip to the database.
+    /// </summary>
+    private async Task<EventCountsAggregate> LoadEventCountsAsync(
+        string eventId,
+        CancellationToken ct)
+    {
+        var memberCount = await _db.EventMembers
+            .AsNoTracking()
+            .CountAsync(x => x.EventId == eventId, ct);
+
+        var hubPostCount = await _db.HubPosts
+            .AsNoTracking()
+            .CountAsync(x => x.EventId == eventId, ct);
+
+        var pendingCategoryProposalsCount = await _db.CategoryProposals
+            .AsNoTracking()
+            .CountAsync(x => x.EventId == eventId && x.Status == "pending", ct);
+
+        var wishlistCount = await _db.WishlistItems
+            .AsNoTracking()
+            .CountAsync(x => x.EventId == eventId, ct);
+
+        return new EventCountsAggregate(
+            memberCount,
+            hubPostCount,
+            pendingCategoryProposalsCount,
+            wishlistCount);
+    }
+
+    private record EventCountsAggregate(
+        int MemberCount,
+        int HubPostCount,
+        int PendingCategoryProposalsCount,
+        int WishlistCount);
+
     private Task<List<AwardCategoryEntity>> LoadActiveCategoriesAsync(
         string eventId,
         CancellationToken ct) =>

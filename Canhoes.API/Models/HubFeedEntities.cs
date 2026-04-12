@@ -55,6 +55,20 @@ public sealed class HubPostLikeEntity
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
+public sealed class HubPostDownvoteEntity
+{
+    [Key]
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    [Required]
+    public string PostId { get; set; } = string.Empty;
+
+    [Required]
+    public Guid UserId { get; set; }
+
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
 public sealed class HubPostCommentEntity
 {
     [Key]

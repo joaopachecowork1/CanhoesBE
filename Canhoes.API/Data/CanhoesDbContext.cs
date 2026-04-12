@@ -28,6 +28,7 @@ public class CanhoesDbContext : DbContext
     // Hub / Feed (used by Canhões feed page)
     public DbSet<HubPostEntity> HubPosts => Set<HubPostEntity>();
     public DbSet<HubPostLikeEntity> HubPostLikes => Set<HubPostLikeEntity>();
+    public DbSet<HubPostDownvoteEntity> HubPostDownvotes => Set<HubPostDownvoteEntity>();
     public DbSet<HubPostCommentEntity> HubPostComments => Set<HubPostCommentEntity>();
     public DbSet<HubPostReactionEntity> HubPostReactions => Set<HubPostReactionEntity>();
     public DbSet<HubPostCommentReactionEntity> HubPostCommentReactions => Set<HubPostCommentReactionEntity>();
@@ -150,6 +151,15 @@ public class CanhoesDbContext : DbContext
         });
 
         modelBuilder.Entity<HubPostLikeEntity>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasMaxLength(64);
+            e.Property(x => x.PostId).HasMaxLength(64);
+            e.HasIndex(x => new { x.PostId, x.UserId }).IsUnique();
+            e.HasIndex(x => x.PostId);
+        });
+
+        modelBuilder.Entity<HubPostDownvoteEntity>(e =>
         {
             e.HasKey(x => x.Id);
             e.Property(x => x.Id).HasMaxLength(64);

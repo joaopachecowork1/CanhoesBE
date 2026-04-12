@@ -17,6 +17,8 @@ public sealed partial class HubController
         Dictionary<string, int> CommentCounts,
         Dictionary<string, Dictionary<string, int>> ReactionCountsByPostId,
         Dictionary<string, List<string>> MyReactions,
+        Dictionary<string, int> DownvoteCounts,
+        Dictionary<string, bool> MyDownvotes,
         Dictionary<Guid, string> Authors,
         Dictionary<string, HubPollDto> PollsByPostId);
 
@@ -158,12 +160,35 @@ public sealed partial class HubController
                     group => group.Key,
                     group => group.Select(reaction => reaction.Emoji).Distinct().ToList());
 
+        var downvotes = await _db.HubPostDownvotes
+            .AsNoTracking()
+            .Where(x => postIds.Contains(x.PostId))
+            .Select(x => new { x.PostId, x.UserId })
+            .ToListAsync(ct);
+
+        var downvoteCounts = downvotes
+            .GroupBy(dv => dv.PostId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Count());
+
+        var myDownvotes = userId == Guid.Empty
+            ? new Dictionary<string, bool>()
+            : downvotes
+                .Where(dv => dv.UserId == userId)
+                .GroupBy(dv => dv.PostId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => true);
+
         return new HubFeedSnapshot(
             posts,
             mediaUrlsByPostId,
             commentCounts,
             reactionCountsByPostId,
             myReactions,
+            downvoteCounts,
+            myDownvotes,
             await GetDisplayNamesAsync(posts.Select(post => post.AuthorUserId), ct),
             await BuildPollsByPostIdAsync(postIds, userId, ct));
     }
@@ -241,6 +266,8 @@ public sealed partial class HubController
             var myReactions = snapshot.MyReactions.TryGetValue(post.Id, out var mine)
                 ? mine
                 : new List<string>();
+            var downvoteCount = snapshot.DownvoteCounts.TryGetValue(post.Id, out var dvCount) ? dvCount : 0;
+            var downvotedByMe = snapshot.MyDownvotes.TryGetValue(post.Id, out var dv) && dv;
 
             return new HubPostDto
             {
@@ -254,9 +281,11 @@ public sealed partial class HubController
                 CreatedAtUtc = post.CreatedAtUtc,
                 LikeCount = reactionCounts.TryGetValue(DefaultReactionEmoji, out var likeCount) ? likeCount : 0,
                 CommentCount = snapshot.CommentCounts.TryGetValue(post.Id, out var commentCount) ? commentCount : 0,
+                DownvoteCount = downvoteCount,
                 ReactionCounts = reactionCounts,
                 MyReactions = myReactions,
                 LikedByMe = myReactions.Contains(DefaultReactionEmoji),
+                DownvotedByMe = downvotedByMe,
                 Poll = snapshot.PollsByPostId.TryGetValue(post.Id, out var poll) ? poll : null
             };
         }).ToList();

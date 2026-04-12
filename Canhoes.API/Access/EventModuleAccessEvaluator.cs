@@ -44,6 +44,35 @@ internal static class EventModuleAccessEvaluator
             .OrderByDescending(x => x.StartDateUtc)
             .FirstOrDefaultAsync(ct);
 
+        return await BuildSnapshotAsync(db, eventId, userId, isAdmin, state, activePhase, ct);
+    }
+
+    /// <summary>
+    /// Overload that reuses already-loaded phases to avoid a duplicate DB query.
+    /// </summary>
+    public static async Task<EventModuleAccessSnapshot> EvaluateAsync(
+        CanhoesDbContext db,
+        string eventId,
+        Guid userId,
+        bool isAdmin,
+        List<EventPhaseEntity> phases,
+        CancellationToken ct)
+    {
+        var state = await GetOrCreateEventStateAsync(db, eventId, ct);
+        var activePhase = phases.FirstOrDefault(x => x.IsActive);
+
+        return await BuildSnapshotAsync(db, eventId, userId, isAdmin, state, activePhase, ct);
+    }
+
+    private static async Task<EventModuleAccessSnapshot> BuildSnapshotAsync(
+        CanhoesDbContext db,
+        string eventId,
+        Guid userId,
+        bool isAdmin,
+        CanhoesEventStateEntity state,
+        EventPhaseEntity? activePhase,
+        CancellationToken ct)
+    {
         var latestDraw = await GetLatestSecretSantaDrawAsync(db, eventId, ct);
         var hasAssignment = latestDraw is not null
             && userId != Guid.Empty
