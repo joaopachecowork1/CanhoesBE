@@ -653,6 +653,38 @@ public sealed partial class EventsController
             new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
         );
 
+    private static EventFeedPostFullDto ToEventFeedPostFullDto(
+        HubPostEntity entity,
+        string authorName,
+        List<string> mediaUrls,
+        int likeCount,
+        int commentCount,
+        int downvoteCount,
+        Dictionary<string, int> reactionCounts,
+        List<string> myReactions,
+        bool likedByMe,
+        bool downvotedByMe,
+        EventFeedPollDto? poll) =>
+        new(
+            entity.Id,
+            entity.EventId,
+            entity.AuthorUserId.ToString(),
+            authorName,
+            entity.Text,
+            mediaUrls.FirstOrDefault(),
+            mediaUrls,
+            entity.IsPinned,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero),
+            likeCount,
+            commentCount,
+            downvoteCount,
+            reactionCounts,
+            myReactions,
+            likedByMe,
+            downvotedByMe,
+            poll
+        );
+
     /// <summary>
     /// @deprecated Use enriched BuildAdminVotesDtoAsync instead, which resolves
     /// category and user names. Kept for legacy compatibility only.

@@ -552,13 +552,13 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/feed/posts")]
-    public async Task<ActionResult<PagedResult<EventFeedPostDto>>> GetPosts(
+    public async Task<ActionResult<PagedResult<EventFeedPostFullDto>>> GetPosts(
         [FromRoute] string eventId,
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var (_, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
 
         take = Math.Clamp(take, 1, 200);
@@ -578,21 +578,69 @@ public sealed partial class EventsController
 
         var postIds = posts.Select(post => post.Id).ToList();
 
+        // Load media
         var mediaByPostId = await _db.HubPostMedia
             .AsNoTracking()
             .Where(x => x.PostId != null && postIds.Contains(x.PostId))
             .OrderBy(x => x.UploadedAtUtc)
             .ToListAsync(ct);
 
+        // Load authors
         var authorIds = posts.Select(x => x.AuthorUserId).Distinct().ToList();
         var authors = await _db.Users
             .AsNoTracking()
             .Where(x => authorIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, ct);
 
+        // Load reaction counts (grouped by emoji)
+        var allReactions = await _db.HubPostReactions
+            .AsNoTracking()
+            .Where(x => postIds.Contains(x.PostId))
+            .ToListAsync(ct);
+
+        var reactionCountsByPost = allReactions
+            .GroupBy(r => r.PostId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.GroupBy(r => r.Emoji)
+                    .ToDictionary(x => x.Key, x => x.Count())
+            );
+
+        var myReactionsByPost = access.UserId == Guid.Empty
+            ? new Dictionary<string, List<string>>()
+            : allReactions
+                .Where(r => r.UserId == access.UserId)
+                .GroupBy(r => r.PostId)
+                .ToDictionary(g => g.Key, g => g.Select(r => r.Emoji).Distinct().ToList());
+
+        // Load comment counts
+        var commentCounts = await _db.HubPostComments
+            .AsNoTracking()
+            .Where(x => postIds.Contains(x.PostId))
+            .GroupBy(x => x.PostId)
+            .ToDictionaryAsync(g => g.Key, g => g.Count(), ct);
+
+        // Load like counts (heart reaction)
+        var likeCounts = allReactions
+            .Where(r => r.Emoji == "❤️")
+            .GroupBy(r => r.PostId)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        // Build DTOs (downvotes not supported yet)
+        var likedByMe = access.UserId == Guid.Empty
+            ? new HashSet<string>()
+            : new HashSet<string>(
+                allReactions
+                    .Where(x => x.UserId == access.UserId && x.Emoji == "❤️")
+                    .Select(x => x.PostId)
+            );
+
+        // Build DTOs (downvotes not supported yet)
         var dtos = posts.Select(x =>
         {
             var author = authors.TryGetValue(x.AuthorUserId, out var value) ? value : null;
+            var authorName = author is null ? "Unknown" : GetUserName(author);
+            
             var mediaUrls = MediaUrlFormatter.Collect(
                 x.MediaUrl,
                 x.MediaUrlsJson,
@@ -601,10 +649,22 @@ public sealed partial class EventsController
                     .Select(media => media.Url)
             );
 
-            return ToEventFeedPostDto(x, author is null ? "Unknown" : GetUserName(author), mediaUrls);
+            return ToEventFeedPostFullDto(
+                x,
+                authorName,
+                mediaUrls,
+                likeCounts.GetValueOrDefault(x.Id, 0),
+                commentCounts.GetValueOrDefault(x.Id, 0),
+                downvoteCount: 0, // Downvotes not supported yet
+                reactionCountsByPost.GetValueOrDefault(x.Id) ?? new Dictionary<string, int>(),
+                myReactionsByPost.GetValueOrDefault(x.Id) ?? new List<string>(),
+                likedByMe.Contains(x.Id),
+                downvotedByMe: false, // Downvotes not supported yet
+                poll: null // Poll support can be added later
+            );
         }).ToList();
 
-        return new PagedResult<EventFeedPostDto>(dtos, total, skip, take, (skip + take) < total);
+        return new PagedResult<EventFeedPostFullDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("{eventId}/feed/posts")]
