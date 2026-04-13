@@ -200,8 +200,5 @@ public sealed class HubPostMediaEntity
     [MaxLength(128)]
     public string? ContentType { get; set; }
 
-    [Required]
-    public byte[] ContentBytes { get; set; } = Array.Empty<byte>();
-
     public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
 }

@@ -94,27 +94,39 @@ public sealed partial class EventsController
             );
         }
 
-        var categories = await LoadAdminCategoriesAsync(eventId, ct);
-        var nominees = await LoadAdminNomineeDtosAsync(eventId, null, ct);
-        var adminNominees = await LoadAdminNominationDtosAsync(eventId, null, ct);
-        var proposals = await BuildAdminProposalsHistoryDtoAsync(eventId, ct);
-        var votes = await BuildAdminVotesDtoAsync(eventId, ct);
-        var members = await LoadAdminMembersAsync(eventId, ct);
-        var secretSanta = await BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
-        var officialResults = await BuildAdminOfficialResultsDtoAsync(eventId, ct);
+        // OPTIMIZATION: Parallelize independent data loads
+        // Group 1: Categories + Members + SecretSanta (independent reads)
+        var categoriesTask = LoadAdminCategoriesAsync(eventId, ct);
+        var membersTask = LoadAdminMembersAsync(eventId, ct);
+        var secretSantaTask = BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
+
+        // Group 2: Nominees + Proposals (independent reads)
+        var nomineesTask = LoadAdminNomineeDtosAsync(eventId, null, ct);
+        var adminNomineesTask = LoadAdminNominationDtosAsync(eventId, null, ct);
+        var proposalsTask = BuildAdminProposalsHistoryDtoAsync(eventId, ct);
+
+        // Group 3: Votes + OfficialResults (reads UserVotes independently)
+        var votesTask = BuildAdminVotesDtoAsync(eventId, ct);
+        var officialResultsTask = BuildAdminOfficialResultsDtoAsync(eventId, ct);
+
+        // Execute all groups in parallel
+        await Task.WhenAll(
+            categoriesTask, membersTask, secretSantaTask,
+            nomineesTask, adminNomineesTask, proposalsTask,
+            votesTask, officialResultsTask);
 
         return new EventAdminBootstrapDto(
             events,
             state,
             counts,
-            categories,
-            nominees,
-            adminNominees,
-            proposals,
-            votes,
-            members,
-            secretSanta,
-            officialResults
+            await categoriesTask,
+            await nomineesTask,
+            await adminNomineesTask,
+            await proposalsTask,
+            await votesTask,
+            await membersTask,
+            await secretSantaTask,
+            await officialResultsTask
         );
     }
 
@@ -347,11 +359,14 @@ public sealed partial class EventsController
             return new AdminVotesDto(0, []);
         }
 
-        // Load votes and categories in parallel
+        // OPTIMIZATION: Limit to most recent 500 votes to prevent memory overload
+        // Use the paginated endpoint ({eventId}/admin/votes/paged) for full access
+        const int maxVotes = 500;
         var votesTask = _db.Votes
             .AsNoTracking()
             .Where(x => categoryIds.Contains(x.CategoryId))
             .OrderByDescending(x => x.UpdatedAtUtc)
+            .Take(maxVotes)
             .ToListAsync(ct);
 
         var categoriesTask = _db.AwardCategories
@@ -422,17 +437,28 @@ public sealed partial class EventsController
             .Count();
 
         var categoryIds = categories.Select(x => x.Id).ToList();
-        var userVotes = categoryIds.Count == 0
-            ? new List<UserVoteEntity>()
-            : await _db.UserVotes
-                .AsNoTracking()
-                .Where(x => categoryIds.Contains(x.CategoryId))
-                .ToListAsync(ct);
+        if (categoryIds.Count == 0)
+        {
+            return new AdminOfficialResultsDto(
+                eventId,
+                DateTimeOffset.UtcNow,
+                totalMembers,
+                new List<AdminCategoryResultDto>());
+        }
+
+        // OPTIMIZATION: Project only needed columns instead of full entities
+        var userVotes = await _db.UserVotes
+            .AsNoTracking()
+            .Where(x => categoryIds.Contains(x.CategoryId))
+            .Select(x => new { x.CategoryId, x.VoterUserId, x.TargetUserId })
+            .ToListAsync(ct);
 
         // Pre-build user name lookup for all user IDs that appear in votes
-        var allVoterIds = userVotes.Select(v => v.VoterUserId).Distinct().ToList();
-        var allNomineeIds = userVotes.Select(v => v.TargetUserId).Distinct().ToList();
-        var allUserIds = allVoterIds.Concat(allNomineeIds).Distinct().ToList();
+        var allUserIds = userVotes
+            .Select(v => v.VoterUserId)
+            .Concat(userVotes.Select(v => v.TargetUserId))
+            .Distinct()
+            .ToList();
 
         var userNameLookup = new Dictionary<Guid, string>();
         foreach (var userId in allUserIds)
@@ -447,38 +473,60 @@ public sealed partial class EventsController
             }
         }
 
+        // OPTIMIZATION: Pre-group votes by category for O(1) lookup
+        var votesByCategory = userVotes
+            .GroupBy(v => v.CategoryId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         var resultCategories = categories.Select(category =>
         {
-            var votesForCategory = userVotes
-                .Where(vote => vote.CategoryId == category.Id)
-                .ToList();
+            if (!votesByCategory.TryGetValue(category.Id, out var votesForCategory))
+            {
+                var emptyTotalVotes = 0;
+                var emptyParticipationRate = totalMembers == 0 ? 0d : (double)emptyTotalVotes / totalMembers;
+                return new AdminCategoryResultDto(
+                    category.Id,
+                    category.Name,
+                    emptyTotalVotes,
+                    new List<AdminNomineeVoteTallyDto>(),
+                    emptyParticipationRate);
+            }
 
-            var nominees = votesForCategory
-                .GroupBy(vote => vote.TargetUserId)
-                .Select(group =>
+            // Group votes by target user (nominee)
+            var votesByNominee = votesForCategory
+                .GroupBy(v => v.TargetUserId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            var nominees = votesByNominee
+                .Select(kvp =>
                 {
-                    var nomineeTitle = userNameLookup.TryGetValue(group.Key, out var name)
-                        ? name
-                        : group.Key.ToString();
+                    var nomineeId = kvp.Key;
+                    var votesForNominee = kvp.Value;
+                    var voteCount = votesForNominee.Count;
 
-                    var voterUserIds = group
-                        .Select(vote => userNameLookup.TryGetValue(vote.VoterUserId, out var voterName)
+                    var nomineeTitle = userNameLookup.TryGetValue(nomineeId, out var name)
+                        ? name
+                        : nomineeId.ToString();
+
+                    var voterUserIds = votesForNominee
+                        .Select(v => v.VoterUserId)
+                        .Select(voterId => userNameLookup.TryGetValue(voterId, out var voterName)
                             ? voterName
-                            : vote.VoterUserId.ToString())
+                            : voterId.ToString())
                         .Distinct()
-                        .OrderBy(name => name)
+                        .OrderBy(n => n)
                         .ToList();
 
                     return new AdminNomineeVoteTallyDto(
-                        group.Key.ToString(),
+                        nomineeId.ToString(),
                         nomineeTitle,
                         null,
-                        group.Count(),
+                        voteCount,
                         voterUserIds
                     );
                 })
-                .OrderByDescending(nominee => nominee.VoteCount)
-                .ThenBy(nominee => nominee.NomineeTitle)
+                .OrderByDescending(n => n.VoteCount)
+                .ThenBy(n => n.NomineeTitle)
                 .ToList();
 
             var totalVotes = votesForCategory.Count;

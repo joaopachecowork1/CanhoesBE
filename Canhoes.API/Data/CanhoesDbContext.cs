@@ -196,7 +196,6 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.Url).HasMaxLength(1024);
             e.Property(x => x.OriginalFileName).HasMaxLength(260);
             e.Property(x => x.ContentType).HasMaxLength(128);
-            e.Property(x => x.ContentBytes).HasColumnType("varbinary(max)");
             e.HasIndex(x => x.PostId);
             e.HasIndex(x => x.Url).IsUnique();
         });
@@ -342,10 +341,20 @@ public class CanhoesDbContext : DbContext
             .HasIndex(x => x.IsActive)
             .HasDatabaseName("IX_AwardCategories_IsActive");
 
-        // GalaMeasureEntity: queries filter by IsActive
+        // GalaMeasureEntity: queries filter by EventId AND IsActive
         modelBuilder.Entity<GalaMeasureEntity>()
-            .HasIndex(x => x.IsActive)
-            .HasDatabaseName("IX_Measures_IsActive");
+            .HasIndex(x => new { x.EventId, x.IsActive })
+            .HasDatabaseName("IX_Measures_EventId_IsActive");
+
+        // NomineeEntity: queries filter by EventId, Status, and CategoryId
+        modelBuilder.Entity<NomineeEntity>()
+            .HasIndex(x => new { x.EventId, x.Status, x.CategoryId })
+            .HasDatabaseName("IX_Nominees_EventId_Status_CategoryId");
+
+        // AwardCategoryEntity: queries filter by EventId and IsActive
+        modelBuilder.Entity<AwardCategoryEntity>()
+            .HasIndex(x => new { x.EventId, x.IsActive })
+            .HasDatabaseName("IX_AwardCategories_EventId_IsActive");
 
         // CategoryProposalEntity: queries lookup by ProposedByUserId
         modelBuilder.Entity<CategoryProposalEntity>()

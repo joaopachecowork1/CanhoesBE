@@ -1,8 +1,10 @@
 using Canhoes.Api.Access;
+using Canhoes.Api.Caching;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Canhoes.Api.Controllers;
 
@@ -13,6 +15,7 @@ public partial class CanhoesController : ControllerBase
 {
     private readonly CanhoesDbContext _db;
     private readonly IWebHostEnvironment _env;
+    private readonly IMemoryCache _cache;
 
     private sealed record ActiveEventAccessContext(
         string EventId,
@@ -31,9 +34,10 @@ public partial class CanhoesController : ControllerBase
 
     public sealed record ProposalsByStatus<T>(IEnumerable<T> Pending, IEnumerable<T> Approved, IEnumerable<T> Rejected);
 
-    public CanhoesController(CanhoesDbContext db, IWebHostEnvironment env)
+    public CanhoesController(CanhoesDbContext db, IWebHostEnvironment env, IMemoryCache cache)
     {
         _db = db;
         _env = env;
+        _cache = cache;
     }
 }

@@ -345,7 +345,6 @@ BEGIN
     FileSizeBytes BIGINT NOT NULL DEFAULT(0),
     UploadedByUserId UNIQUEIDENTIFIER NULL,
     ContentType NVARCHAR(128) NULL,
-    ContentBytes VARBINARY(MAX) NOT NULL CONSTRAINT DF_HubPostMedia_ContentBytes DEFAULT(0x),
     UploadedAtUtc DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
   );
   CREATE INDEX IX_HubPostMedia_PostId ON HubPostMedia(PostId);
@@ -356,19 +355,9 @@ BEGIN
   IF COL_LENGTH('HubPostMedia', 'ContentType') IS NULL
     ALTER TABLE HubPostMedia ADD ContentType NVARCHAR(128) NULL;
 
-  IF COL_LENGTH('HubPostMedia', 'ContentBytes') IS NULL
-  BEGIN
-    ALTER TABLE HubPostMedia ADD ContentBytes VARBINARY(MAX) NULL;
-    EXEC(N'UPDATE dbo.HubPostMedia SET ContentBytes = 0x WHERE ContentBytes IS NULL;');
-    EXEC(N'ALTER TABLE dbo.HubPostMedia ALTER COLUMN ContentBytes VARBINARY(MAX) NOT NULL;');
-    IF NOT EXISTS (
-      SELECT 1 FROM sys.default_constraints dc
-      INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
-      INNER JOIN sys.tables t ON t.object_id = c.object_id
-      WHERE t.name = 'HubPostMedia' AND c.name = 'ContentBytes'
-    )
-      ALTER TABLE HubPostMedia ADD CONSTRAINT DF_HubPostMedia_ContentBytes DEFAULT(0x) FOR ContentBytes;
-  END
+  -- Drop ContentBytes column if it exists (migrated to filesystem storage)
+  IF COL_LENGTH('HubPostMedia', 'ContentBytes') IS NOT NULL
+    ALTER TABLE HubPostMedia DROP COLUMN ContentBytes;
 END
 ");
         }

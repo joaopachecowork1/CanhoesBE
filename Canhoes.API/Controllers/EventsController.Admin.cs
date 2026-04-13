@@ -265,11 +265,37 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/admin/members")]
-    public async Task<ActionResult<List<PublicUserDto>>> AdminGetMembers([FromRoute] string eventId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<PublicUserDto>>> AdminGetMembers(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
 
-        return Ok(await LoadAdminMembersAsync(eventId, ct));
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
+        var allMembers = directory.Members;
+        var usersById = directory.UsersById;
+        var total = allMembers.Count;
+
+        var pagedMembers = allMembers
+            .OrderByDescending(member => member.Role == EventRoles.Admin)
+            .ThenBy(member => GetUserName(usersById[member.UserId]))
+            .Skip(skip)
+            .Take(take)
+            .ToList();
+
+        var dtos = pagedMembers
+            .Where(member => usersById.ContainsKey(member.UserId))
+            .Select(member => ToPublicUserDto(
+                usersById[member.UserId],
+                member.Role == EventRoles.Admin))
+            .ToList();
+
+        return new PagedResult<PublicUserDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpGet("{eventId}/admin/votes")]
@@ -289,9 +315,17 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/admin/category-proposals")]
-    public async Task<ActionResult<List<CategoryProposalDto>>> AdminGetCategoryProposals([FromRoute] string eventId, [FromQuery] string? status, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<CategoryProposalDto>>> AdminGetCategoryProposals(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
         var normalizedStatus = NormalizeProposalStatusFilter(status);
         var query = _db.CategoryProposals
@@ -303,11 +337,15 @@ public sealed partial class EventsController
             query = query.Where(x => x.Status == normalizedStatus);
         }
 
+        var total = await query.CountAsync(ct);
         var proposals = await query
             .OrderByDescending(x => x.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(proposals.Select(ToCategoryProposalDto).ToList());
+        var dtos = proposals.Select(ToCategoryProposalDto).ToList();
+        return new PagedResult<CategoryProposalDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPatch("{eventId}/admin/category-proposals/{proposalId}")]
@@ -372,9 +410,17 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/admin/measure-proposals")]
-    public async Task<ActionResult<List<MeasureProposalDto>>> AdminGetMeasureProposals([FromRoute] string eventId, [FromQuery] string? status, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<MeasureProposalDto>>> AdminGetMeasureProposals(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
         var normalizedStatus = NormalizeProposalStatusFilter(status);
         var query = _db.MeasureProposals
@@ -386,11 +432,15 @@ public sealed partial class EventsController
             query = query.Where(x => x.Status == normalizedStatus);
         }
 
+        var total = await query.CountAsync(ct);
         var proposals = await query
             .OrderByDescending(x => x.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(proposals.Select(ToMeasureProposalDto).ToList());
+        var dtos = proposals.Select(ToMeasureProposalDto).ToList();
+        return new PagedResult<MeasureProposalDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPatch("{eventId}/admin/measure-proposals/{proposalId}")]
@@ -481,23 +531,88 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/admin/nominees")]
-    public async Task<ActionResult<List<NomineeDto>>> AdminGetNominees([FromRoute] string eventId, [FromQuery] string? status, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<NomineeDto>>> AdminGetNominees(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
 
-        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
-        return Ok(await LoadAdminNomineeDtosAsync(eventId, normalizedStatus, ct));
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        var query = _db.Nominees
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var total = await query.CountAsync(ct);
+        var nominees = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+
+        var dtos = nominees.Select(ToNomineeDto).ToList();
+        return new PagedResult<NomineeDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpGet("{eventId}/admin/nominations")]
-    public async Task<ActionResult<List<AdminNomineeDto>>> AdminGetNominations([FromRoute] string eventId, [FromQuery] string? status, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<AdminNomineeDto>>> AdminGetNominations(
+        [FromRoute] string eventId,
+        [FromQuery] string? status,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
 
-        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
-        return Ok(await LoadAdminNominationDtosAsync(eventId, normalizedStatus, ct));
+        var normalizedStatus = NormalizeNomineeStatusFilter(status);
+        var query = _db.Nominees
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId);
+
+        if (normalizedStatus is not null)
+        {
+            query = query.Where(x => x.Status == normalizedStatus);
+        }
+
+        var total = await query.CountAsync(ct);
+        var nominees = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+
+        // Batch load user names for all nominees
+        var submittedByIds = nominees.Select(x => x.SubmittedByUserId).Distinct().ToList();
+        var usersById = submittedByIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _db.Users
+                .AsNoTracking()
+                .Where(x => submittedByIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, x => GetUserName(x), ct);
+
+        var dtos = nominees.Select(entity =>
+        {
+            var submittedByName = usersById.TryGetValue(entity.SubmittedByUserId, out var name)
+                ? name
+                : entity.SubmittedByUserId.ToString();
+
+            return ToAdminNomineeDto(entity, submittedByName);
+        }).ToList();
+
+        return new PagedResult<AdminNomineeDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("{eventId}/admin/nominees/{nomineeId}/set-category")]

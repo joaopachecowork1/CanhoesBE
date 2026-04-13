@@ -552,17 +552,30 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/feed/posts")]
-    public async Task<ActionResult<List<EventFeedPostDto>>> GetPosts([FromRoute] string eventId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<EventFeedPostDto>>> GetPosts(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (_, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.HubPosts
+            .CountAsync(x => x.EventId == eventId, ct);
 
         var posts = await _db.HubPosts
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.IsPinned)
             .ThenByDescending(x => x.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
+
         var postIds = posts.Select(post => post.Id).ToList();
 
         var mediaByPostId = await _db.HubPostMedia
@@ -591,7 +604,7 @@ public sealed partial class EventsController
             return ToEventFeedPostDto(x, author is null ? "Unknown" : GetUserName(author), mediaUrls);
         }).ToList();
 
-        return Ok(dtos);
+        return new PagedResult<EventFeedPostDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("{eventId}/feed/posts")]
@@ -625,7 +638,11 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/categories")]
-    public async Task<ActionResult<List<EventCategoryDto>>> GetCategories([FromRoute] string eventId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<EventCategoryDto>>> GetCategories(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (_, _, error) = await RequireEventModuleAccessAsync(
             eventId,
@@ -633,13 +650,22 @@ public sealed partial class EventsController
             ct);
         if (error is not null) return error;
 
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.AwardCategories
+            .CountAsync(x => x.EventId == eventId, ct);
+
         var categories = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderBy(x => x.SortOrder)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(categories.Select(ToEventCategoryDto).ToList());
+        var dtos = categories.Select(ToEventCategoryDto).ToList();
+        return new PagedResult<EventCategoryDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("{eventId}/categories")]
@@ -862,7 +888,11 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/proposals")]
-    public async Task<ActionResult<List<EventProposalDto>>> GetProposals([FromRoute] string eventId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<EventProposalDto>>> GetProposals(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (_, _, error) = await RequireEventModuleAccessAsync(
             eventId,
@@ -870,13 +900,22 @@ public sealed partial class EventsController
             ct);
         if (error is not null) return error;
 
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.CategoryProposals
+            .CountAsync(x => x.EventId == eventId, ct);
+
         var proposals = await _db.CategoryProposals
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(proposals.Select(ToEventProposalDto).ToList());
+        var dtos = proposals.Select(ToEventProposalDto).ToList();
+        return new PagedResult<EventProposalDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("{eventId}/proposals")]
@@ -934,7 +973,11 @@ public sealed partial class EventsController
     }
 
     [HttpGet("{eventId}/wishlist")]
-    public async Task<ActionResult<List<EventWishlistItemDto>>> GetWishlist([FromRoute] string eventId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<EventWishlistItemDto>>> GetWishlist(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (_, _, error) = await RequireEventModuleAccessAsync(
             eventId,
@@ -942,13 +985,22 @@ public sealed partial class EventsController
             ct);
         if (error is not null) return error;
 
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.WishlistItems
+            .CountAsync(x => x.EventId == eventId, ct);
+
         var items = await _db.WishlistItems
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(items.Select(ToEventWishlistItemDto).ToList());
+        var dtos = items.Select(ToEventWishlistItemDto).ToList();
+        return new PagedResult<EventWishlistItemDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("{eventId}/wishlist")]

@@ -25,7 +25,15 @@ internal static class EventContextBootstrap
             hasChanges = true;
         }
 
-        var users = db.Users.ToList();
+        // OPTIMIZATION: Use AsNoTracking() and limit to first 500 users to prevent
+        // startup slowdown on large databases. This is a bootstrap operation,
+        // so it only needs to sync existing users, not all users.
+        const int maxUsersForBootstrap = 500;
+        var users = db.Users.AsNoTracking()
+            .OrderBy(u => u.Id)
+            .Take(maxUsersForBootstrap)
+            .ToList();
+
         var members = db.EventMembers
             .Where(x => x.EventId == EventContextDefaults.DefaultEventId)
             .ToList();

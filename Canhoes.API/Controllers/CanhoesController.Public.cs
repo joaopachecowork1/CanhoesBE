@@ -1,4 +1,5 @@
 using Canhoes.Api.Access;
+using Canhoes.Api.Caching;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -22,29 +23,69 @@ public partial class CanhoesController
 
     [HttpGet("categories")]
     [OutputCache(PolicyName = "Categories", VaryByQueryKeys = new[] { "*" })]
-    public async Task<ActionResult<List<AwardCategoryDto>>> GetCategories(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<AwardCategoryDto>>> GetCategories(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct);
         if (error is not null) return error;
 
-        var cats = await _db.AwardCategories.AsNoTracking()
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        // For default page size, use cache; for custom pagination, skip cache
+        if (skip == 0 && take == 50)
+        {
+            var cacheKey = CacheKeys.ForEvent(CacheKeys.Categories, access.EventId);
+            var allCategories = await _cache.GetOrCreateAsync(
+                cacheKey,
+                CacheKeys.CategoriesTtl,
+                async (token) =>
+                {
+                    var cats = await _db.AwardCategories.AsNoTracking()
+                        .Where(c => c.EventId == access.EventId && c.IsActive)
+                        .OrderBy(c => c.SortOrder)
+                        .ToListAsync(token);
+                    return cats.Select(ToAwardCategoryDto).ToList();
+                },
+                ct);
+
+            var total = allCategories.Count;
+            var pagedItems = allCategories.Skip(skip).Take(take).ToList();
+            return new PagedResult<AwardCategoryDto>(pagedItems, total, skip, take, (skip + take) < total);
+        }
+
+        var totalDirect = await _db.AwardCategories
+            .CountAsync(c => c.EventId == access.EventId && c.IsActive, ct);
+
+        var catsDirect = await _db.AwardCategories.AsNoTracking()
             .Where(c => c.EventId == access.EventId && c.IsActive)
             .OrderBy(c => c.SortOrder)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
-        return cats.Select(ToAwardCategoryDto).ToList();
+
+        var dtosDirect = catsDirect.Select(ToAwardCategoryDto).ToList();
+        return new PagedResult<AwardCategoryDto>(dtosDirect, totalDirect, skip, take, (skip + take) < totalDirect);
     }
 
     [HttpGet("nominees")]
-    public async Task<ActionResult<List<NomineeDto>>> GetNominees(
+    public async Task<ActionResult<PagedResult<NomineeDto>>> GetNominees(
         [FromQuery] string? categoryId,
         [FromQuery] string? kind,
-        CancellationToken ct)
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var nomineeKind = NormalizeNomineeKind(kind);
         var (access, error) = await RequireActiveEventAccessAsync(
             ct,
             moduleKey: GetNomineeModuleKey(nomineeKind));
         if (error is not null) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
         var q = _db.Nominees.AsNoTracking().Where(n => n.EventId == access.EventId);
         if (!string.IsNullOrWhiteSpace(categoryId)) q = q.Where(n => n.CategoryId == categoryId);
@@ -54,21 +95,62 @@ public partial class CanhoesController
         if (!state.NominationsVisible) q = q.Where(n => n.Status == ProposalStatus.Approved);
         if (!access.IsAdmin) q = q.Where(n => n.Status != ProposalStatus.Rejected);
 
-        var list = await q.OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
-        return list.Select(ToNomineeDto).ToList();
+        var total = await q.CountAsync(ct);
+        var list = await q.OrderByDescending(n => n.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+
+        var dtos = list.Select(ToNomineeDto).ToList();
+        return new PagedResult<NomineeDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpGet("measures")]
-    public async Task<ActionResult<List<GalaMeasureDto>>> GetMeasures(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<GalaMeasureDto>>> GetMeasures(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Measures);
         if (error is not null) return error;
 
-        var list = await _db.Measures.AsNoTracking()
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        // For default page size, use cache
+        if (skip == 0 && take == 50)
+        {
+            var cacheKey = CacheKeys.ForEvent(CacheKeys.Measures, access.EventId);
+            var allMeasures = await _cache.GetOrCreateAsync(
+                cacheKey,
+                CacheKeys.MeasuresTtl,
+                async (token) =>
+                {
+                    var measures = await _db.Measures.AsNoTracking()
+                        .Where(m => m.EventId == access.EventId && m.IsActive)
+                        .OrderByDescending(m => m.CreatedAtUtc)
+                        .ToListAsync(token);
+                    return measures.Select(ToGalaMeasureDto).ToList();
+                },
+                ct);
+
+            var total = allMeasures.Count;
+            var pagedItems = allMeasures.Skip(skip).Take(take).ToList();
+            return new PagedResult<GalaMeasureDto>(pagedItems, total, skip, take, (skip + take) < total);
+        }
+
+        var totalDirect = await _db.Measures.AsNoTracking()
+            .CountAsync(m => m.EventId == access.EventId && m.IsActive, ct);
+
+        var listDirect = await _db.Measures.AsNoTracking()
             .Where(m => m.EventId == access.EventId && m.IsActive)
             .OrderByDescending(m => m.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
-        return list.Select(ToGalaMeasureDto).ToList();
+
+        var dtosDirect = listDirect.Select(ToGalaMeasureDto).ToList();
+        return new PagedResult<GalaMeasureDto>(dtosDirect, totalDirect, skip, take, (skip + take) < totalDirect);
     }
 
     [HttpPost("nominees")]
@@ -240,35 +322,53 @@ public partial class CanhoesController
         var state = access.ModuleAccess.State;
         if (!(state.ResultsVisible || state.Phase == LegacyPhaseNames.Gala || access.IsAdmin)) return Forbid();
 
-        var categories = await _db.AwardCategories.AsNoTracking().Where(c => c.IsActive)
-            .Where(c => c.EventId == access.EventId)
+        var eventId = access.EventId;
+
+        // OPTIMIZATION: Load categories, nominees, and vote counts in parallel
+        var categoriesTask = _db.AwardCategories.AsNoTracking()
+            .Where(c => c.EventId == eventId && c.IsActive)
             .OrderBy(c => c.SortOrder)
+            .Select(c => new { c.Id, c.Name, c.SortOrder })
             .ToListAsync(ct);
 
-        var nominees = await _db.Nominees.AsNoTracking()
-            .Where(n => n.EventId == access.EventId && n.Status == ProposalStatus.Approved && n.CategoryId != null)
+        var nomineesTask = _db.Nominees.AsNoTracking()
+            .Where(n => n.EventId == eventId && n.Status == ProposalStatus.Approved && n.CategoryId != null)
+            .Select(n => new { n.Id, n.CategoryId, n.Title, n.ImageUrl })
             .ToListAsync(ct);
 
-        // FIX: Filter votes by categoryIds to avoid loading ALL votes from ALL events
-        var categoryIds = categories.Select(c => c.Id).ToList();
-        var votes = await _db.Votes.AsNoTracking()
-            .Where(v => categoryIds.Contains(v.CategoryId))
+        // OPTIMIZATION: Use GROUP BY to count votes per nominee in the database
+        var voteCountsTask = _db.Votes.AsNoTracking()
+            .Where(v => _db.AwardCategories.Any(c => c.EventId == eventId && c.IsActive && c.Id == v.CategoryId))
+            .GroupBy(v => new { v.CategoryId, v.NomineeId })
+            .Select(g => new { g.Key.CategoryId, g.Key.NomineeId, Count = g.Count() })
             .ToListAsync(ct);
+
+        await Task.WhenAll(categoriesTask, nomineesTask, voteCountsTask);
+
+        var categories = await categoriesTask;
+        var nominees = await nomineesTask;
+        var voteCounts = await voteCountsTask;
+
+        // Build lookup dictionaries for O(1) access
+        var voteCountByCategoryNominee = voteCounts
+            .ToDictionary(vc => (vc.CategoryId, vc.NomineeId), vc => vc.Count);
 
         var result = new List<CanhoesCategoryResultDto>();
         foreach (var cat in categories)
         {
             var catNominees = nominees.Where(n => n.CategoryId == cat.Id).ToList();
-            var catVotes = votes.Where(v => v.CategoryId == cat.Id).ToList();
-            var totalVotes = catVotes.Count;
 
+            // Calculate total votes for this category
+            var totalVotes = voteCounts.Where(vc => vc.CategoryId == cat.Id).Sum(vc => vc.Count);
+
+            // Get top 3 nominees using database-computed counts
             var top = catNominees
                 .Select(n => new CanhoesResultNomineeDto(
                     n.Id,
                     n.CategoryId,
                     n.Title,
                     n.ImageUrl,
-                    catVotes.Count(v => v.NomineeId == n.Id)))
+                    voteCountByCategoryNominee.TryGetValue((cat.Id, n.Id), out var count) ? count : 0))
                 .OrderByDescending(x => x.Votes)
                 .ThenBy(x => x.Title)
                 .Take(3)

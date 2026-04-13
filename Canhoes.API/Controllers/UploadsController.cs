@@ -65,46 +65,9 @@ public sealed class UploadsController : ControllerBase
             return NotFound();
         }
 
-        var mediaCandidates = await _db.HubPostMedia
-            .AsNoTracking()
-            .Where(x => x.Url == normalizedUrl || x.Url.EndsWith("/" + fileName))
-            .OrderByDescending(x => x.UploadedAtUtc)
-            .ToListAsync(ct);
-
-        var media = mediaCandidates.FirstOrDefault(x => x.ContentBytes is { Length: > 0 });
-
-        if (media is null)
-        {
-            var relatedPostId = await _db.HubPosts
-                .AsNoTracking()
-                .Where(x =>
-                    x.MediaUrl == normalizedUrl ||
-                    (x.MediaUrl != null && x.MediaUrl.EndsWith("/" + fileName)) ||
-                    x.MediaUrlsJson.Contains(fileName))
-                .Select(x => x.Id)
-                .FirstOrDefaultAsync(ct);
-
-            if (!string.IsNullOrWhiteSpace(relatedPostId))
-            {
-                media = _db.HubPostMedia
-                    .AsNoTracking()
-                    .Where(x => x.PostId == relatedPostId)
-                    .OrderByDescending(x => x.UploadedAtUtc)
-                    .AsEnumerable()
-                    .FirstOrDefault(x => x.ContentBytes is { Length: > 0 });
-            }
-        }
-
-        if (media is null)
-        {
-            return NotFound();
-        }
-
-        var contentType = string.IsNullOrWhiteSpace(media.ContentType)
-            ? GetContentType(fileName)
-            : media.ContentType;
-
-        return File(media.ContentBytes, contentType);
+        // Media is stored on the filesystem; DB only tracks URLs.
+        // If the file doesn't exist on disk, it's no longer available.
+        return NotFound();
     }
 
     private static string GetContentType(string path)

@@ -46,19 +46,31 @@ public partial class CanhoesController
     }
 
     [HttpGet("admin/categories")]
-    public async Task<ActionResult<List<AwardCategoryDto>>> AdminGetCategories(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<AwardCategoryDto>>> AdminGetCategories(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
         if (error is not null) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.AwardCategories
+            .CountAsync(x => x.EventId == activeEventId, ct);
 
         var cats = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == activeEventId)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(cats.Select(ToAwardCategoryDto).ToList());
+        var dtos = cats.Select(ToAwardCategoryDto).ToList();
+        return new PagedResult<AwardCategoryDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPatch("admin/categories/{id}")]
@@ -240,12 +252,17 @@ public partial class CanhoesController
     }
 
     [HttpGet("admin/measures/proposals")]
-    public async Task<ActionResult<List<MeasureProposalDto>>> AdminListMeasureProposals(
+    public async Task<ActionResult<PagedResult<MeasureProposalDto>>> AdminListMeasureProposals(
         [FromQuery] string? status,
-        CancellationToken ct)
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
         if (error is not null) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
         var normalized = string.IsNullOrWhiteSpace(status)
             ? "all"
@@ -258,11 +275,15 @@ public partial class CanhoesController
             query = query.Where(p => p.Status == normalized);
         }
 
+        var total = await query.CountAsync(ct);
         var list = await query
             .OrderByDescending(p => p.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return Ok(list.Select(ToMeasureProposalDto).ToList());
+        var dtos = list.Select(ToMeasureProposalDto).ToList();
+        return new PagedResult<MeasureProposalDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPatch("admin/measures/{id}")]
@@ -348,10 +369,17 @@ public partial class CanhoesController
     }
 
     [HttpGet("admin/nominees")]
-    public async Task<ActionResult<List<NomineeDto>>> AdminGetAllNominees([FromQuery] string? status, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<NomineeDto>>> AdminGetAllNominees(
+        [FromQuery] string? status,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
         if (error is not null) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
         var query = _db.Nominees.AsNoTracking().Where(n => n.EventId == activeEventId);
         if (!string.IsNullOrWhiteSpace(status))
@@ -359,8 +387,14 @@ public partial class CanhoesController
             query = query.Where(n => n.Status == status);
         }
 
-        var list = await query.OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
-        return list.Select(ToNomineeDto).ToList();
+        var total = await query.CountAsync(ct);
+        var list = await query.OrderByDescending(n => n.CreatedAtUtc)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+
+        var dtos = list.Select(ToNomineeDto).ToList();
+        return new PagedResult<NomineeDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("admin/nominees/{id}/approve")]

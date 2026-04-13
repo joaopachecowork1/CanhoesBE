@@ -429,12 +429,10 @@ public sealed partial class HubController
             var fileName = $"{Guid.NewGuid():N}{ext}";
             var abs = Path.Combine(hubDir, fileName);
 
+            // OPTIMIZATION: Stream directly to disk instead of loading into memory twice
             await using var input = file.OpenReadStream();
-            await using var ms = new MemoryStream();
-            await input.CopyToAsync(ms, ct);
-            var bytes = ms.ToArray();
-
-            await System.IO.File.WriteAllBytesAsync(abs, bytes, ct);
+            await using var output = new FileStream(abs, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+            await input.CopyToAsync(output, ct);
 
             var url = $"/uploads/hub/{fileName}";
             urls.Add(url);
@@ -445,7 +443,6 @@ public sealed partial class HubController
                 FileSizeBytes = file.Length,
                 UploadedByUserId = userId == Guid.Empty ? null : userId,
                 ContentType = string.IsNullOrWhiteSpace(file.ContentType) ? null : file.ContentType,
-                ContentBytes = bytes,
                 UploadedAtUtc = DateTime.UtcNow
             });
         }

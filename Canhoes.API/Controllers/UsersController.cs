@@ -30,14 +30,24 @@ public sealed class UsersController : ControllerBase
     }
 
     [HttpGet("users")]
-    public async Task<ActionResult<List<PublicUserDto>>> ListUsers(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<PublicUserDto>>> ListUsers(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.Users.CountAsync(ct);
         var list = await _db.Users.AsNoTracking()
             .OrderBy(u => u.DisplayName)
             .ThenBy(u => u.Email)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
 
-        return list.Select(u => new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin)).ToList();
+        var items = list.Select(u => new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin)).ToList();
+        return new PagedResult<PublicUserDto>(items, total, skip, take, (skip + take) < total);
     }
 
     // Simple admin management (optional; useful for a small private event)

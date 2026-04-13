@@ -63,23 +63,54 @@ public static class CacheKeys
 }
 
 /// <summary>
-/// Extension methods to invalidate cache entry patterns.
+/// Extension methods to work with IMemoryCache.
 /// </summary>
 public static class CacheExtensions
 {
     /// <summary>
+    /// Get or create a cached value for a specific key.
+    /// </summary>
+    public static async Task<T> GetOrCreateAsync<T>(
+        this IMemoryCache cache,
+        string key,
+        TimeSpan absoluteExpirationRelativeToNow,
+        Func<CancellationToken, Task<T>> factory,
+        CancellationToken ct = default)
+    {
+        if (cache.TryGetValue(key, out T? cachedValue))
+        {
+            return cachedValue!;
+        }
+
+        var value = await factory(ct);
+
+        cache.Set(key, value, new MemoryCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = absoluteExpirationRelativeToNow,
+            Size = 1
+        });
+
+        return value;
+    }
+
+    /// <summary>
+    /// Remove a specific cache key.
+    /// </summary>
+    public static void Remove(this IMemoryCache cache, string key)
+    {
+        cache.Remove(key);
+    }
+
+    /// <summary>
     /// Remove all cache keys that start with any of the given prefixes.
     /// Since IMemoryCache doesn't support pattern-based invalidation,
-    /// we track created keys and remove them explicitly.
-    /// 
-    /// For simplicity, this removes entries with known prefixes.
-    /// In production with high write frequency, consider a versioned cache key approach.
+    /// this is a no-op placeholder. Use Remove() with specific keys.
     /// </summary>
     public static void RemoveByPrefix(this IMemoryCache cache, string[] prefixes)
     {
         // IMemoryCache doesn't support prefix-based removal.
-        // For now this is a no-op placeholder — actual invalidation is done
-        // by the calling code removing specific keys it knows about.
-        // A proper implementation would track keys via a separate set.
+        // For production with high write frequency, consider:
+        // 1. Versioned cache keys (increment version on write)
+        // 2. Redis cache with pattern-based invalidation
     }
 }

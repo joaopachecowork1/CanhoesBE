@@ -10,34 +10,58 @@ namespace Canhoes.Api.Controllers;
 public partial class CanhoesController
 {
     [HttpGet("members")]
-    public async Task<ActionResult<List<PublicUserDto>>> GetMembers(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<PublicUserDto>>> GetMembers(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
         if (error is not null) return error;
+
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
 
         var memberIds = await _db.EventMembers.AsNoTracking()
             .Where(x => x.EventId == access.EventId)
             .Select(x => x.UserId)
             .ToListAsync(ct);
 
+        var total = memberIds.Count;
         var list = await _db.Users.AsNoTracking()
             .Where(u => memberIds.Contains(u.Id))
             .OrderBy(u => u.DisplayName)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
-        return list.Select(ToPublicUserDto).ToList();
+
+        var items = list.Select(ToPublicUserDto).ToList();
+        return new PagedResult<PublicUserDto>(items, total, skip, take, (skip + take) < total);
     }
 
     [HttpGet("wishlist")]
-    public async Task<ActionResult<List<WishlistItemDto>>> GetWishlist(CancellationToken ct)
+    public async Task<ActionResult<PagedResult<WishlistItemDto>>> GetWishlist(
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct, moduleKey: EventModuleKey.Wishlist);
         if (error is not null) return error;
 
+        take = Math.Clamp(take, 1, 200);
+        skip = Math.Max(0, skip);
+
+        var total = await _db.WishlistItems.AsNoTracking()
+            .CountAsync(x => x.EventId == access.EventId, ct);
+
         var items = await _db.WishlistItems.AsNoTracking()
             .Where(x => x.EventId == access.EventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(ct);
-        return items.Select(ToWishlistItemDto).ToList();
+
+        var dtos = items.Select(ToWishlistItemDto).ToList();
+        return new PagedResult<WishlistItemDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
     [HttpPost("wishlist")]
@@ -117,6 +141,9 @@ public partial class CanhoesController
     {
         if (!IsAdmin()) return Forbid();
 
+        var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
+        if (error is not null) return error;
+
         var eventCode = string.IsNullOrWhiteSpace(req.EventCode)
             ? $"canhoes{DateTime.UtcNow.Year}"
             : req.EventCode.Trim();
@@ -137,7 +164,15 @@ public partial class CanhoesController
             await _db.SaveChangesAsync(ct);
         }
 
+        // FIX: Load only event members instead of ALL users in the system
+        var memberIds = await _db.EventMembers
+            .AsNoTracking()
+            .Where(x => x.EventId == activeEventId)
+            .Select(x => x.UserId)
+            .ToListAsync(ct);
+
         var users = await _db.Users.AsNoTracking()
+            .Where(u => memberIds.Contains(u.Id))
             .OrderBy(u => u.Id)
             .ToListAsync(ct);
 

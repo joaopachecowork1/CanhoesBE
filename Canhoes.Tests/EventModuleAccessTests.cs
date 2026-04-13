@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.FileProviders;
 using Xunit;
 
@@ -274,7 +275,7 @@ public sealed class EventModuleAccessTests
 
         var controller = CreateCanhoesController(db, userId);
 
-        var result = await controller.GetWishlist(CancellationToken.None);
+        var result = await controller.GetWishlist(skip: 0, take: 50, CancellationToken.None);
 
         result.Result.Should().BeOfType<ForbidResult>();
     }
@@ -295,8 +296,9 @@ public sealed class EventModuleAccessTests
 
         var controller = CreateCanhoesController(db, adminId, isAdmin: true);
 
-        var result = await controller.AdminGetCategories(CancellationToken.None);
-        var categories = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<List<AwardCategoryDto>>().Subject;
+        var result = await controller.AdminGetCategories(skip: 0, take: 50, CancellationToken.None);
+        var pagedResult = result.Value.Should().BeOfType<PagedResult<AwardCategoryDto>>().Subject;
+        var categories = pagedResult.Items;
 
         categories.Should().ContainSingle(x => x.Name == "Categoria ativa");
         categories.Should().NotContain(x => x.Name == "Categoria antiga");
@@ -330,10 +332,11 @@ public sealed class EventModuleAccessTests
 
         var controller = CreateCanhoesController(db, userId);
 
-        var nomineesResult = await controller.GetNominees(null, "nominees", CancellationToken.None);
-        var stickersResult = await controller.GetNominees(null, "stickers", CancellationToken.None);
+        var nomineesResult = await controller.GetNominees(null, "nominees", skip: 0, take: 50, CancellationToken.None);
+        var stickersResult = await controller.GetNominees(null, "stickers", skip: 0, take: 50, CancellationToken.None);
 
-        nomineesResult.Value.Should().ContainSingle(x => x.Title == "Nomeacao aberta");
+        nomineesResult.Value.Should().NotBeNull();
+        nomineesResult.Value!.Items.Should().ContainSingle(x => x.Title == "Nomeacao aberta");
         stickersResult.Result.Should().BeOfType<ForbidResult>();
     }
 
@@ -435,7 +438,6 @@ public sealed class EventModuleAccessTests
             PostId = "post-1",
             Url = "/uploads/hub/post-1.png",
             OriginalFileName = "post-1.png",
-            ContentBytes = Array.Empty<byte>(),
             UploadedAtUtc = DateTime.UtcNow
         });
         db.HubPostComments.Add(new HubPostCommentEntity
@@ -532,7 +534,7 @@ public sealed class EventModuleAccessTests
 
     private static CanhoesController CreateCanhoesController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
     {
-        var controller = new CanhoesController(db, new FakeWebHostEnvironment())
+        var controller = new CanhoesController(db, new FakeWebHostEnvironment(), new Microsoft.Extensions.Caching.Memory.MemoryCache(new MemoryCacheOptions()))
         {
             ControllerContext = new ControllerContext
             {
