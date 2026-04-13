@@ -122,31 +122,58 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        var categoryIds = await _db.AwardCategories
+        // Parallelize independent count queries
+        var categoryIdsTask = _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .Select(x => x.Id)
             .ToListAsync(ct);
 
-        var categoryProposalsPending = await _db.CategoryProposals
+        var categoryProposalsTask = _db.CategoryProposals
             .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId && x.Status == "pending", ct);
+            .Where(x => x.EventId == eventId)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Total = g.Count(),
+                Pending = g.Count(x => x.Status == ProposalStatus.Pending)
+            })
+            .FirstOrDefaultAsync(ct);
 
-        var categoryProposalsTotal = await _db.CategoryProposals
+        var measureProposalsTask = _db.MeasureProposals
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Total = g.Count(),
+                Pending = g.Count(x => x.Status == ProposalStatus.Pending)
+            })
+            .FirstOrDefaultAsync(ct);
+
+        var nomineesTask = _db.Nominees
             .AsNoTracking()
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var measureProposalsPending = await _db.MeasureProposals
-            .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId && x.Status == "pending", ct);
-
-        var measureProposalsTotal = await _db.MeasureProposals
+        var membersTask = _db.EventMembers
             .AsNoTracking()
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var nomineesTotal = await _db.Nominees
+        var voteCategoriesTask = _db.AwardCategories
             .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId, ct);
+            .CountAsync(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote, ct);
+
+        await Task.WhenAll(
+            categoryIdsTask,
+            categoryProposalsTask,
+            measureProposalsTask,
+            nomineesTask,
+            membersTask,
+            voteCategoriesTask);
+
+        var categoryIds = categoryIdsTask.Result;
+        var categoryProposals = categoryProposalsTask.Result;
+        var measureProposals = measureProposalsTask.Result;
 
         var votesTotal = categoryIds.Count == 0
             ? 0
@@ -154,24 +181,16 @@ public sealed partial class EventsController
                 .AsNoTracking()
                 .CountAsync(x => categoryIds.Contains(x.CategoryId), ct);
 
-        var membersTotal = await _db.EventMembers
-            .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId, ct);
-
-        var officialResultsCategoriesCount = await _db.AwardCategories
-            .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote, ct);
-
         return new AdminListCountsDto(
-            nomineesTotal,
-            nomineesTotal, // adminNomineesTotal = same source
+            nomineesTask.Result,
+            nomineesTask.Result, // adminNomineesTotal = same source
             votesTotal,
-            categoryProposalsTotal,
-            categoryProposalsPending,
-            measureProposalsTotal,
-            measureProposalsPending,
-            membersTotal,
-            officialResultsCategoriesCount
+            categoryProposals?.Total ?? 0,
+            categoryProposals?.Pending ?? 0,
+            measureProposals?.Total ?? 0,
+            measureProposals?.Pending ?? 0,
+            membersTask.Result,
+            voteCategoriesTask.Result
         );
     }
 
@@ -179,14 +198,19 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
+        // Reuse the consolidated single-query counts from LoadEventCountsAsync,
+        // then fetch the category count separately (different filter).
+        var counts = await LoadEventCountsAsync(eventId, ct);
+        var categoryCount = await _db.AwardCategories
+            .AsNoTracking()
+            .CountAsync(x => x.EventId == eventId, ct);
+
         return new EventCountsDto(
-            await _db.EventMembers.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
-            await _db.HubPosts.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
-            await _db.AwardCategories.AsNoTracking().CountAsync(x => x.EventId == eventId, ct),
-            await _db.CategoryProposals.AsNoTracking().CountAsync(
-                x => x.EventId == eventId && x.Status == "pending",
-                ct),
-            await _db.WishlistItems.AsNoTracking().CountAsync(x => x.EventId == eventId, ct)
+            counts.MemberCount,
+            counts.HubPostCount,
+            categoryCount,
+            counts.PendingCategoryProposalsCount,
+            counts.WishlistCount
         );
     }
 
@@ -309,29 +333,41 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        var categoryIds = await _db.AwardCategories
+        var categoryIdsTask = _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .Select(x => x.Id)
             .ToListAsync(ct);
 
-        var votes = await _db.Votes
+        await categoryIdsTask;
+        var categoryIds = categoryIdsTask.Result;
+
+        if (categoryIds.Count == 0)
+        {
+            return new AdminVotesDto(0, []);
+        }
+
+        // Load votes and categories in parallel
+        var votesTask = _db.Votes
             .AsNoTracking()
             .Where(x => categoryIds.Contains(x.CategoryId))
             .OrderByDescending(x => x.UpdatedAtUtc)
             .ToListAsync(ct);
 
+        var categoriesTask = _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => categoryIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, ct);
+
+        await Task.WhenAll(votesTask, categoriesTask);
+
+        var votes = votesTask.Result;
         if (votes.Count == 0)
         {
             return new AdminVotesDto(0, []);
         }
 
-        // Resolve category names and user names
-        var categoriesById = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, ct);
-
+        // Resolve user names in a single batch
         var userIds = votes.Select(x => x.UserId).Distinct().ToList();
         var usersById = await _db.Users
             .AsNoTracking()
@@ -340,7 +376,7 @@ public sealed partial class EventsController
 
         var enrichedVotes = votes.Select(vote =>
         {
-            var categoryName = categoriesById.TryGetValue(vote.CategoryId, out var cat)
+            var categoryName = categoriesTask.Result.TryGetValue(vote.CategoryId, out var cat)
                 ? cat.Name
                 : vote.CategoryId;
 
@@ -365,14 +401,20 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        var categories = await _db.AwardCategories
+        // Load categories and member directory in parallel
+        var categoriesTask = _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
             .ToListAsync(ct);
 
-        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
+        var directoryTask = LoadEventMemberDirectoryAsync(eventId, ct);
+
+        await Task.WhenAll(categoriesTask, directoryTask);
+
+        var categories = categoriesTask.Result;
+        var directory = directoryTask.Result;
         var usersById = directory.UsersById;
         var totalMembers = directory.Members
             .Select(member => member.UserId)
@@ -387,6 +429,24 @@ public sealed partial class EventsController
                 .Where(x => categoryIds.Contains(x.CategoryId))
                 .ToListAsync(ct);
 
+        // Pre-build user name lookup for all user IDs that appear in votes
+        var allVoterIds = userVotes.Select(v => v.VoterUserId).Distinct().ToList();
+        var allNomineeIds = userVotes.Select(v => v.TargetUserId).Distinct().ToList();
+        var allUserIds = allVoterIds.Concat(allNomineeIds).Distinct().ToList();
+
+        var userNameLookup = new Dictionary<Guid, string>();
+        foreach (var userId in allUserIds)
+        {
+            if (usersById.TryGetValue(userId, out var user))
+            {
+                userNameLookup[userId] = GetUserName(user);
+            }
+            else
+            {
+                userNameLookup[userId] = userId.ToString();
+            }
+        }
+
         var resultCategories = categories.Select(category =>
         {
             var votesForCategory = userVotes
@@ -397,13 +457,13 @@ public sealed partial class EventsController
                 .GroupBy(vote => vote.TargetUserId)
                 .Select(group =>
                 {
-                    var nomineeTitle = usersById.TryGetValue(group.Key, out var nomineeUser)
-                        ? GetUserName(nomineeUser)
+                    var nomineeTitle = userNameLookup.TryGetValue(group.Key, out var name)
+                        ? name
                         : group.Key.ToString();
 
                     var voterUserIds = group
-                        .Select(vote => usersById.TryGetValue(vote.VoterUserId, out var voterUser)
-                            ? GetUserName(voterUser)
+                        .Select(vote => userNameLookup.TryGetValue(vote.VoterUserId, out var voterName)
+                            ? voterName
                             : vote.VoterUserId.ToString())
                         .Distinct()
                         .OrderBy(name => name)
@@ -586,15 +646,15 @@ public sealed partial class EventsController
         new(
             items.Where(item => string.Equals(
                 statusSelector(item),
-                "pending",
+                ProposalStatus.Pending,
                 StringComparison.OrdinalIgnoreCase)).ToList(),
             items.Where(item => string.Equals(
                 statusSelector(item),
-                "approved",
+                ProposalStatus.Approved,
                 StringComparison.OrdinalIgnoreCase)).ToList(),
             items.Where(item => string.Equals(
                 statusSelector(item),
-                "rejected",
+                ProposalStatus.Rejected,
                 StringComparison.OrdinalIgnoreCase)).ToList()
         );
 
@@ -621,27 +681,34 @@ public sealed partial class EventsController
                 .AsNoTracking()
                 .CountAsync(x => categoryIds.Contains(x.CategoryId), ct);
 
-        var votes = categoryIds.Count == 0
-            ? new List<VoteEntity>()
-            : await _db.Votes
-                .AsNoTracking()
-                .Where(x => categoryIds.Contains(x.CategoryId))
-                .OrderByDescending(x => x.UpdatedAtUtc)
-                .Skip(skip)
-                .Take(take)
-                .ToListAsync(ct);
+        if (total == 0)
+        {
+            return new AdminVotesPagedDto(0, [], skip, take, false);
+        }
 
+        // Load paged votes and categories in parallel
+        var votesTask = _db.Votes
+            .AsNoTracking()
+            .Where(x => categoryIds.Contains(x.CategoryId))
+            .OrderByDescending(x => x.UpdatedAtUtc)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+
+        var categoriesTask = _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => categoryIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, ct);
+
+        await Task.WhenAll(votesTask, categoriesTask);
+
+        var votes = votesTask.Result;
         if (votes.Count == 0)
         {
             return new AdminVotesPagedDto(total, [], skip, take, false);
         }
 
-        // Resolve names for the page of votes
-        var categoriesById = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, ct);
-
+        // Resolve user names in a single batch
         var userIds = votes.Select(x => x.UserId).Distinct().ToList();
         var usersById = await _db.Users
             .AsNoTracking()
@@ -650,7 +717,7 @@ public sealed partial class EventsController
 
         var enrichedVotes = votes.Select(vote =>
         {
-            var categoryName = categoriesById.TryGetValue(vote.CategoryId, out var cat)
+            var categoryName = categoriesTask.Result.TryGetValue(vote.CategoryId, out var cat)
                 ? cat.Name
                 : vote.CategoryId;
 

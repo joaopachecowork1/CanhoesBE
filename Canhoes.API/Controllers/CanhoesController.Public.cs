@@ -51,8 +51,8 @@ public partial class CanhoesController
         q = q.Where(n => n.SubmissionKind == nomineeKind);
 
         var state = access.ModuleAccess.State;
-        if (!state.NominationsVisible) q = q.Where(n => n.Status == "approved");
-        if (!access.IsAdmin) q = q.Where(n => n.Status != "rejected");
+        if (!state.NominationsVisible) q = q.Where(n => n.Status == ProposalStatus.Approved);
+        if (!access.IsAdmin) q = q.Where(n => n.Status != ProposalStatus.Rejected);
 
         var list = await q.OrderByDescending(n => n.CreatedAtUtc).ToListAsync(ct);
         return list.Select(ToNomineeDto).ToList();
@@ -81,7 +81,7 @@ public partial class CanhoesController
         if (error is not null) return error;
 
         var state = access.ModuleAccess.State;
-        if (state.Phase != "nominations") return BadRequest("Nominations are closed.");
+        if (state.Phase != LegacyPhaseNames.Nominations) return BadRequest("Nominations are closed.");
 
         var nominee = new NomineeEntity
         {
@@ -91,7 +91,7 @@ public partial class CanhoesController
             SubmissionKind = nomineeKind,
             Title = req.Title,
             SubmittedByUserId = access.UserId,
-            Status = "pending",
+            Status = ProposalStatus.Pending,
             CreatedAtUtc = DateTime.UtcNow
         };
 
@@ -107,7 +107,7 @@ public partial class CanhoesController
         if (error is not null) return error;
 
         var state = access.ModuleAccess.State;
-        if (state.Phase != "nominations") return BadRequest("Category proposals are closed.");
+        if (state.Phase != LegacyPhaseNames.Nominations) return BadRequest("Category proposals are closed.");
 
         var proposal = new CategoryProposalEntity
         {
@@ -116,7 +116,7 @@ public partial class CanhoesController
             Name = req.Name.Trim(),
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
             ProposedByUserId = access.UserId,
-            Status = "pending",
+            Status = ProposalStatus.Pending,
             CreatedAtUtc = DateTime.UtcNow
         };
 
@@ -132,7 +132,7 @@ public partial class CanhoesController
         if (error is not null) return error;
 
         var state = access.ModuleAccess.State;
-        if (state.Phase != "nominations") return BadRequest("Measure proposals are closed.");
+        if (state.Phase != LegacyPhaseNames.Nominations) return BadRequest("Measure proposals are closed.");
 
         var proposal = new MeasureProposalEntity
         {
@@ -140,7 +140,7 @@ public partial class CanhoesController
             EventId = access.EventId,
             Text = req.Text.Trim(),
             ProposedByUserId = access.UserId,
-            Status = "pending",
+            Status = ProposalStatus.Pending,
             CreatedAtUtc = DateTime.UtcNow
         };
 
@@ -201,11 +201,11 @@ public partial class CanhoesController
         if (error is not null) return error;
 
         var state = access.ModuleAccess.State;
-        if (state.Phase != "voting") return BadRequest("Voting is closed.");
+        if (state.Phase != LegacyPhaseNames.Voting) return BadRequest("Voting is closed.");
 
         var nominee = await _db.Nominees.AsNoTracking()
             .FirstOrDefaultAsync(n => n.Id == req.NomineeId && n.EventId == access.EventId && n.CategoryId == req.CategoryId, ct);
-        if (nominee is null || nominee.Status != "approved") return BadRequest("Invalid nominee.");
+        if (nominee is null || nominee.Status != ProposalStatus.Approved) return BadRequest("Invalid nominee.");
 
         var existing = await _db.Votes.FirstOrDefaultAsync(v => v.CategoryId == req.CategoryId && v.UserId == access.UserId, ct);
         if (existing is null)
@@ -238,7 +238,7 @@ public partial class CanhoesController
         if (error is not null) return error;
 
         var state = access.ModuleAccess.State;
-        if (!(state.ResultsVisible || state.Phase == "gala" || access.IsAdmin)) return Forbid();
+        if (!(state.ResultsVisible || state.Phase == LegacyPhaseNames.Gala || access.IsAdmin)) return Forbid();
 
         var categories = await _db.AwardCategories.AsNoTracking().Where(c => c.IsActive)
             .Where(c => c.EventId == access.EventId)
@@ -246,7 +246,7 @@ public partial class CanhoesController
             .ToListAsync(ct);
 
         var nominees = await _db.Nominees.AsNoTracking()
-            .Where(n => n.EventId == access.EventId && n.Status == "approved" && n.CategoryId != null)
+            .Where(n => n.EventId == access.EventId && n.Status == ProposalStatus.Approved && n.CategoryId != null)
             .ToListAsync(ct);
 
         // FIX: Filter votes by categoryIds to avoid loading ALL votes from ALL events
@@ -302,7 +302,7 @@ public partial class CanhoesController
         if (error is not null) return error;
 
         var state = access.ModuleAccess.State;
-        if (state.Phase != "voting") return BadRequest("Voting is closed.");
+        if (state.Phase != LegacyPhaseNames.Voting) return BadRequest("Voting is closed.");
 
         var cat = await _db.AwardCategories.AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == req.CategoryId && c.EventId == access.EventId, ct);

@@ -108,52 +108,51 @@ internal static class EventModuleAccessEvaluator
             .FirstOrDefaultAsync(x => x.EventId == eventId, ct);
         if (existingState is not null) return existingState;
 
-        var nextId = (await db.CanhoesEventState
-            .AsNoTracking()
-            .MaxAsync(x => (int?)x.Id, ct) ?? 0) + 1;
-        var defaultVisibilityJson = SerializeModuleVisibility(DefaultModuleVisibility());
-
-        try
+        // Optimistic insert with retry on conflict — avoids race condition
+        // when multiple requests try to create state simultaneously.
+        const int maxRetries = 3;
+        for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            if (IsSqlServer(db))
-            {
-                await db.Database.ExecuteSqlInterpolatedAsync($@"
-IF COLUMNPROPERTY(OBJECT_ID('dbo.CanhoesEventState'), 'Id', 'IsIdentity') = 1
-BEGIN
-  SET IDENTITY_INSERT dbo.CanhoesEventState ON;
-  INSERT INTO dbo.CanhoesEventState (Id, EventId, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
-  VALUES ({nextId}, {eventId}, {"nominations"}, {true}, {false}, {defaultVisibilityJson});
-  SET IDENTITY_INSERT dbo.CanhoesEventState OFF;
-END
-ELSE
-BEGIN
-  INSERT INTO dbo.CanhoesEventState (Id, EventId, Phase, NominationsVisible, ResultsVisible, ModuleVisibilityJson)
-  VALUES ({nextId}, {eventId}, {"nominations"}, {true}, {false}, {defaultVisibilityJson});
-END", ct);
+            existingState = await db.CanhoesEventState
+                .FirstOrDefaultAsync(x => x.EventId == eventId, ct);
+            if (existingState is not null) return existingState;
 
-                return await db.CanhoesEventState.FirstAsync(x => x.EventId == eventId, ct);
-            }
+            var nextId = (await db.CanhoesEventState
+                .AsNoTracking()
+                .MaxAsync(x => (int?)x.Id, ct) ?? 0) + 1;
+            var defaultVisibilityJson = SerializeModuleVisibility(DefaultModuleVisibility());
 
-            existingState = new CanhoesEventStateEntity
+            var newState = new CanhoesEventStateEntity
             {
                 Id = nextId,
                 EventId = eventId,
-                Phase = "nominations",
+                Phase = LegacyPhaseNames.Nominations,
                 NominationsVisible = true,
                 ResultsVisible = false,
                 ModuleVisibilityJson = defaultVisibilityJson
             };
 
-            db.CanhoesEventState.Add(existingState);
-            await db.SaveChangesAsync(ct);
-            return existingState;
+            try
+            {
+                db.CanhoesEventState.Add(newState);
+                await db.SaveChangesAsync(ct);
+                return newState;
+            }
+            catch (DbUpdateException)
+            {
+                // Another request may have inserted concurrently.
+                // Rollback the current change tracker and retry.
+                db.ChangeTracker.Clear();
+            }
         }
-        catch
-        {
-            existingState = await db.CanhoesEventState.FirstOrDefaultAsync(x => x.EventId == eventId, ct);
-            if (existingState is not null) return existingState;
-            throw;
-        }
+
+        // Final fallback — one more read after retries exhausted
+        existingState = await db.CanhoesEventState
+            .FirstOrDefaultAsync(x => x.EventId == eventId, ct);
+        if (existingState is not null) return existingState;
+
+        throw new InvalidOperationException(
+            $"Could not create event state for '{eventId}' after {maxRetries} retries.");
     }
 
     public static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? state)
@@ -195,22 +194,22 @@ END", ct);
         switch (phaseType)
         {
             case EventPhaseTypes.Draw:
-                state.Phase = "locked";
+                state.Phase = LegacyPhaseNames.Locked;
                 state.NominationsVisible = false;
                 state.ResultsVisible = false;
                 break;
             case EventPhaseTypes.Proposals:
-                state.Phase = "nominations";
+                state.Phase = LegacyPhaseNames.Nominations;
                 state.NominationsVisible = true;
                 state.ResultsVisible = false;
                 break;
             case EventPhaseTypes.Voting:
-                state.Phase = "voting";
+                state.Phase = LegacyPhaseNames.Voting;
                 state.NominationsVisible = false;
                 state.ResultsVisible = false;
                 break;
             case EventPhaseTypes.Results:
-                state.Phase = "gala";
+                state.Phase = LegacyPhaseNames.Gala;
                 state.NominationsVisible = false;
                 state.ResultsVisible = true;
                 break;
@@ -231,12 +230,12 @@ END", ct);
         var activeType = activePhase?.Type;
 
         var isDrawPhase = activeType == EventPhaseTypes.Draw;
-        var isProposalPhase = activeType == EventPhaseTypes.Proposals || legacyPhase == "nominations";
-        var isVotingPhase = activeType == EventPhaseTypes.Voting || legacyPhase == "voting";
+        var isProposalPhase = activeType == EventPhaseTypes.Proposals || legacyPhase == LegacyPhaseNames.Nominations;
+        var isVotingPhase = activeType == EventPhaseTypes.Voting || legacyPhase == LegacyPhaseNames.Voting;
         var isResultsPhase =
             activeType == EventPhaseTypes.Results ||
-            legacyPhase == "gala" ||
-            (legacyPhase == "locked" && resultsVisible);
+            legacyPhase == LegacyPhaseNames.Gala ||
+            (legacyPhase == LegacyPhaseNames.Locked && resultsVisible);
 
         var proposalModulesVisible = isAdmin || (nominationsVisible && isProposalPhase);
         var resultsModulesVisible = isAdmin || resultsVisible || isResultsPhase;
@@ -330,11 +329,4 @@ END", ct);
         return codes;
     }
 
-    private static bool IsSqlServer(CanhoesDbContext db)
-    {
-        if (!db.Database.IsRelational()) return false;
-
-        var provider = db.Database.ProviderName ?? string.Empty;
-        return provider.Contains("SqlServer", StringComparison.OrdinalIgnoreCase);
-    }
 }

@@ -202,6 +202,82 @@ public class CanhoesDbContext : DbContext
         });
 
         // -----------------
+        // Cascade deletes: removing a post removes all child entities
+        // -----------------
+
+        modelBuilder.Entity<HubPostReactionEntity>(e =>
+        {
+            e.HasOne<HubPostEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostDownvoteEntity>(e =>
+        {
+            e.HasOne<HubPostEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostCommentEntity>(e =>
+        {
+            e.HasOne<HubPostEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostCommentReactionEntity>(e =>
+        {
+            e.HasOne<HubPostCommentEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.CommentId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostPollVoteEntity>(e =>
+        {
+            e.HasOne<HubPostPollEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostPollOptionEntity>(e =>
+        {
+            e.HasOne<HubPostPollEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostPollEntity>(e =>
+        {
+            e.HasOne<HubPostEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostLikeEntity>(e =>
+        {
+            e.HasOne<HubPostEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<HubPostMediaEntity>(e =>
+        {
+            e.HasOne<HubPostEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.PostId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // -----------------
         // Performance indexes (added during performance audit)
         // -----------------
 

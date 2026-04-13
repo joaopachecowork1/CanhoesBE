@@ -8,6 +8,7 @@ using Canhoes.Api;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Middleware;
+using Canhoes.Api.Services;
 using Canhoes.Api.Startup;
 using Canhoes.Api.Caching;
 using Canhoes.BL.Interfaces;
@@ -45,24 +46,21 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddDbContext<CanhoesDbContext>(opt =>
 {
     var cs = builder.Configuration.GetConnectionString("DefaultConnection")
-        ?? builder.Configuration.GetConnectionString("Default")
-        ?? "Data Source=localhost;Initial Catalog=Canhoes;Integrated Security=True;TrustServerCertificate=True;";
+        ?? builder.Configuration.GetConnectionString("Default");
+
+    if (string.IsNullOrWhiteSpace(cs))
+    {
+        throw new InvalidOperationException(
+            "Connection string not configured. Set ConnectionStrings__Default via environment variable or appsettings.json.");
+    }
+
     opt.UseSqlServer(cs, sql =>
     {
-        // Azure SQL can reject connections briefly during failover or warm-up.
-        // Let EF retry those transient faults before the app gives up on startup.
         sql.EnableRetryOnFailure(
             maxRetryCount: 6,
             maxRetryDelay: TimeSpan.FromSeconds(15),
             errorNumbersToAdd: null);
     });
-
-    // Performance: log all EF Core queries with timing
-    var loggerFactory = LoggerFactory.Create(logging =>
-    {
-        logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.Information);
-    });
-    opt.UseLoggerFactory(loggerFactory);
 
     // Enable sensitive data logging in development for query debugging
     if (builder.Environment.IsDevelopment())
@@ -71,15 +69,23 @@ builder.Services.AddDbContext<CanhoesDbContext>(opt =>
     }
 
     // Default to NoTracking for read-heavy API workloads
-    // (individual queries can override with .AsTracking() when needed)
     opt.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 });
 
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<SecretSantaService>();
 
 // --- AUTH (Google id_token) ---
 var useMockAuth = builder.Environment.IsDevelopment()
     && builder.Configuration.GetValue<bool>("Auth:UseMockAuth");
+
+// Safety: never allow mock auth in production, regardless of environment name.
+if (useMockAuth && !builder.Environment.IsDevelopment())
+{
+    throw new InvalidOperationException(
+        "Auth:UseMockAuth cannot be enabled in non-Development environments.");
+}
+
 var clientId = builder.Configuration["Auth:Google:ClientId"]?.Trim();
 
 if (!useMockAuth && string.IsNullOrWhiteSpace(clientId))
@@ -161,11 +167,13 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<RequestMetricsCollector>();
 
 // Health checks with SQL Server
+var healthCheckCs = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? builder.Configuration.GetConnectionString("Default")
+    ?? "";
+
 builder.Services.AddHealthChecks()
     .AddSqlServer(
-        builder.Configuration.GetConnectionString("Default")
-        ?? builder.Configuration.GetConnectionString("DefaultConnection")
-        ?? "",
+        healthCheckCs,
         name: "sql-server",
         failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded);
 
@@ -244,6 +252,16 @@ app.UseMiddleware<UserContextMiddleware>();
 
 app.MapGet("/health", async ([FromServices] Canhoes.Api.Data.CanhoesDbContext db, CancellationToken ct) =>
 {
+    if (string.IsNullOrWhiteSpace(healthCheckCs))
+    {
+        return Results.Ok(new
+        {
+            status = "degraded",
+            database = "connection-string-not-configured",
+            timestampUtc = DateTime.UtcNow
+        });
+    }
+
     var dbWorking = await db.Database.CanConnectAsync(ct);
     return Results.Ok(new
     {

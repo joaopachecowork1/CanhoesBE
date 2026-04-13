@@ -5,14 +5,13 @@ namespace Canhoes.Api.Auth;
 
 /// <summary>
 /// DEV ONLY.
-/// Sets a user id for request scoping.
+/// Sets a user identity for request scoping when mock auth is enabled.
 ///
-/// How it works (simple on purpose):
-/// - If Authorization: Bearer <token> is present, we treat the user as logged in.
-/// - If X-User-Id header is present, we use it.
-/// - Otherwise, we fall back to a configured MockUserId.
-///
-/// TODO: Replace with real authentication (JWT validation).
+/// How it works:
+/// - Reads MockUserEmail and AdminEmails from configuration.
+/// - Creates claims with the mock email and marks the user as admin if the
+///   email appears in the AdminEmails allowlist.
+/// - The UserContextMiddleware will resolve this email to a real UserEntity.
 /// </summary>
 public sealed class MockAuthMiddleware
 {
@@ -27,31 +26,26 @@ public sealed class MockAuthMiddleware
 
     public async Task Invoke(HttpContext ctx)
     {
-        // 1. Lemos os valores do ficheiro appsettings
-        var mockIdStr = _cfg["Auth:MockUserId"] ?? "11111111-1111-1111-1111-111111111111";
         var mockEmail = _cfg["Auth:MockUserEmail"] ?? "dev@canhoes.com";
+        var adminEmails = _cfg.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
+        var isAdmin = adminEmails.Any(e => string.Equals(e.Trim(), mockEmail, StringComparison.OrdinalIgnoreCase));
 
-        // 2. Criamos as "Claims" (a informação do utilizador falso)
         var claims = new List<Claim>
         {
-            new Claim(JwtRegisteredClaimNames.Sub, mockEmail),
-            new Claim(JwtRegisteredClaimNames.Email, mockEmail),
-            new Claim("displayName", "Mock Admin"),
-            // Usamos o ID mockado para preencher a Claim de Identifier
-            new Claim(ClaimTypes.NameIdentifier, mockIdStr)
+            new Claim("sub", mockEmail),
+            new Claim("email", mockEmail),
+            new Claim(ClaimTypes.Email, mockEmail),
+            new Claim("displayName", isAdmin ? "Mock Admin" : "Mock User"),
         };
 
-        // 3. Criamos uma identidade "autenticada" e injetamos no contexto do pedido
         var identity = new ClaimsIdentity(claims, "MockAuthScheme");
         ctx.User = new ClaimsPrincipal(identity);
 
-        // 4. Mantemos o ctx.Items para compatibilidade com o teu UserContextMiddleware
-        if (Guid.TryParse(mockIdStr, out var mockId))
-        {
-            ctx.Items["UserId"] = mockId;
-        }
+        // Store email and admin flag so UserContextMiddleware can resolve
+        // or create the corresponding UserEntity on first access.
+        ctx.Items["MockAuthEmail"] = mockEmail;
+        ctx.Items["MockAuthIsAdmin"] = isAdmin;
 
-        // Passamos a bola ao próximo passo na pipeline
         await _next(ctx);
     }
 }

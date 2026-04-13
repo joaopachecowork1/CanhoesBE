@@ -134,9 +134,7 @@ public sealed partial class EventsController
     private static string? NormalizeProposalStatus(string status)
     {
         var normalizedStatus = status.Trim().ToLowerInvariant();
-        return normalizedStatus is "pending" or "approved" or "rejected"
-            ? normalizedStatus
-            : null;
+        return ProposalStatus.IsValid(normalizedStatus) ? normalizedStatus : null;
     }
 
     private static string? NormalizeNomineeStatusFilter(string? status)
@@ -144,8 +142,6 @@ public sealed partial class EventsController
         if (string.IsNullOrWhiteSpace(status)) return null;
 
         var normalizedStatus = status.Trim().ToLowerInvariant();
-        return normalizedStatus is "pending" or "approved" or "rejected"
-            ? normalizedStatus
-            : null;
+        return ProposalStatus.IsValid(normalizedStatus) ? normalizedStatus : null;
     }
 }

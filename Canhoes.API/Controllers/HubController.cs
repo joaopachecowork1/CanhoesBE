@@ -5,6 +5,13 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Canhoes.Api.Controllers;
 
+/// <summary>
+/// Legacy hub controller. All functionality has been migrated to the
+/// event-scoped endpoints under <c>api/v1/events/{eventId}/feed/*</c>.
+/// This controller is kept for backward compatibility and will be removed
+/// once the frontend fully migrates away from it.
+/// </summary>
+[Obsolete("Use EventsController feed endpoints under api/v1/events/{eventId}/feed/* instead.")]
 [ApiController]
 [Route("api/hub")]
 [Authorize]

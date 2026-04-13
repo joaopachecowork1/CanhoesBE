@@ -18,9 +18,6 @@ public sealed partial class EventsController
         return value.Length > 16 ? value[..16] : value;
     }
 
-    private Task<bool> FeedPostExistsInEventAsync(string eventId, string postId, CancellationToken ct) =>
-        _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-
     // ========================================================================
     // FEED INTERACTION ENDPOINTS (replaces HubController functionality)
     // ========================================================================
@@ -32,7 +29,9 @@ public sealed partial class EventsController
 
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (post is null) return NotFound();
 
         var existing = await _db.HubPostReactions
             .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == DefaultFeedReactionEmoji, ct);
@@ -64,7 +63,9 @@ public sealed partial class EventsController
 
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (!postExists) return NotFound();
 
         var existing = await _db.HubPostDownvotes
             .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
@@ -100,7 +101,9 @@ public sealed partial class EventsController
 
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (!postExists) return NotFound();
 
         var existing = await _db.HubPostReactions
             .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == emoji, ct);
@@ -132,9 +135,15 @@ public sealed partial class EventsController
 
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
 
-        return Ok(await LoadFeedCommentDtosAsync(postId, access.UserId, ct));
+        var comments = await LoadFeedCommentDtosAsync(postId, access.UserId, ct);
+        if (comments.Count == 0)
+        {
+            var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+            if (!postExists) return NotFound();
+        }
+
+        return Ok(comments);
     }
 
     [HttpPost("{eventId}/feed/posts/{postId}/comments")]
@@ -145,7 +154,14 @@ public sealed partial class EventsController
 
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
+
+        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (!postExists) return NotFound();
+
+        var user = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == access.UserId)
+            .Select(u => new { u.Id, Name = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName! })
+            .SingleOrDefaultAsync(ct);
 
         var comment = new HubPostCommentEntity
         {
@@ -159,7 +175,11 @@ public sealed partial class EventsController
         _db.HubPostComments.Add(comment);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(await BuildCreatedFeedCommentDtoAsync(comment, ct));
+        var userLookup = user is not null
+            ? new Dictionary<Guid, string> { { user.Id, user.Name } }
+            : new Dictionary<Guid, string>();
+
+        return Ok(await BuildCreatedFeedCommentDtoAsync(comment, userLookup, ct));
     }
 
     [HttpDelete("{eventId}/feed/posts/{postId}/comments/{commentId}")]
@@ -174,13 +194,10 @@ public sealed partial class EventsController
         var comment = await _db.HubPostComments
             .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
         if (comment is null) return NotFound();
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
         if (comment.UserId != access.UserId && !access.IsAdmin) return Forbid();
 
-        var commentReactions = _db.HubPostCommentReactions.Where(x => x.CommentId == commentId);
-        _db.HubPostCommentReactions.RemoveRange(commentReactions);
+        // Cascade delete handles comment reactions
         _db.HubPostComments.Remove(comment);
-
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -198,7 +215,6 @@ public sealed partial class EventsController
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
         if (comment is null) return NotFound();
-        if (!await FeedPostExistsInEventAsync(eventId, postId, ct)) return NotFound();
 
         var emoji = NormalizeFeedReactionEmoji(req?.Emoji);
         var existing = await _db.HubPostCommentReactions
@@ -234,12 +250,15 @@ public sealed partial class EventsController
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
 
-        var pollExists = await _db.HubPostPolls.AnyAsync(x => x.PostId == postId, ct)
-            && await FeedPostExistsInEventAsync(eventId, postId, ct);
-        if (!pollExists) return NotFound();
+        // Check poll and post existence in a single parallel query
+        var pollTask = _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
+        var postTask = _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        await Task.WhenAll(pollTask, postTask);
+
+        if (!pollTask.Result || !postTask.Result) return NotFound();
 
         var optionId = req.OptionId.Trim();
-        var optionExists = await _db.HubPostPollOptions.AnyAsync(x => x.Id == optionId && x.PostId == postId, ct);
+        var optionExists = await _db.HubPostPollOptions.AsNoTracking().AnyAsync(x => x.Id == optionId && x.PostId == postId, ct);
         if (!optionExists) return BadRequest("Invalid optionId.");
 
         var existing = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
@@ -269,7 +288,7 @@ public sealed partial class EventsController
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, _, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        var (access, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
         var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
@@ -286,37 +305,14 @@ public sealed partial class EventsController
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, _, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        var (access, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
         var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
         if (post is null) return NotFound();
 
-        // Cascade delete
-        var postReactions = _db.HubPostReactions.Where(x => x.PostId == postId);
-        _db.HubPostReactions.RemoveRange(postReactions);
-
-        var postDownvotes = _db.HubPostDownvotes.Where(x => x.PostId == postId);
-        _db.HubPostDownvotes.RemoveRange(postDownvotes);
-
-        var postMedia = _db.HubPostMedia.Where(x => x.PostId == postId);
-        _db.HubPostMedia.RemoveRange(postMedia);
-
-        var postPolls = _db.HubPostPolls.Where(x => x.PostId == postId);
-        _db.HubPostPolls.RemoveRange(postPolls);
-
-        var postPollOptions = _db.HubPostPollOptions.Where(x => x.PostId == postId);
-        _db.HubPostPollOptions.RemoveRange(postPollOptions);
-
-        var postPollVotes = _db.HubPostPollVotes.Where(x => x.PostId == postId);
-        _db.HubPostPollVotes.RemoveRange(postPollVotes);
-
-        var comments = _db.HubPostComments.Where(x => x.PostId == postId);
-        _db.HubPostComments.RemoveRange(comments);
-
-        var commentReactions = _db.HubPostCommentReactions.Where(x => x.Comment.PostId == postId);
-        _db.HubPostCommentReactions.RemoveRange(commentReactions);
-
+        // Cascade delete is configured in OnModelCreating — the database handles
+        // removing reactions, comments, polls, media, etc. when the post is deleted.
         _db.HubPosts.Remove(post);
         await _db.SaveChangesAsync(ct);
 
@@ -356,40 +352,66 @@ public sealed partial class EventsController
             .Select(x => new { x.CommentId, x.UserId, x.Emoji })
             .ToListAsync(ct);
 
+        // Pre-group reactions by comment to avoid N+1 LINQ iterations
+        var reactionsByComment = reactions
+            .GroupBy(r => r.CommentId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.GroupBy(r => r.Emoji)
+                    .ToDictionary(x => x.Key, x => x.Count()));
+
         var userIds = comments.Select(c => c.UserId).Distinct().ToList();
         var users = await _db.Users.AsNoTracking()
             .Where(u => userIds.Contains(u.Id))
             .Select(u => new { u.Id, Name = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName! })
             .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
 
-        return comments.Select(comment => new HubCommentDto(
-            comment.Id,
-            comment.PostId,
-            comment.UserId,
-            users.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
-            comment.Text,
-            comment.CreatedAtUtc,
-            reactions.Where(r => r.CommentId == comment.Id)
-                .GroupBy(r => r.Emoji)
-                .ToDictionary(g => g.Key, g => g.Count()),
-            userId == Guid.Empty ? new List<string>() :
-                reactions.Where(r => r.CommentId == comment.Id && r.UserId == userId)
-                    .Select(r => r.Emoji).Distinct().ToList()
-        )).ToList();
+        return comments.Select(comment =>
+        {
+            var commentReactions = reactionsByComment.TryGetValue(comment.Id, out var r)
+                ? r
+                : new Dictionary<string, int>();
+
+            var myReactions = userId == Guid.Empty
+                ? new List<string>()
+                : reactions
+                    .Where(r => r.CommentId == comment.Id && r.UserId == userId)
+                    .Select(r => r.Emoji)
+                    .Distinct()
+                    .ToList();
+
+            return new HubCommentDto(
+                comment.Id,
+                comment.PostId,
+                comment.UserId,
+                users.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
+                comment.Text,
+                comment.CreatedAtUtc,
+                commentReactions,
+                myReactions
+            );
+        }).ToList();
     }
 
-    private async Task<HubCommentDto> BuildCreatedFeedCommentDtoAsync(HubPostCommentEntity comment, CancellationToken ct)
+    private async Task<HubCommentDto> BuildCreatedFeedCommentDtoAsync(
+        HubPostCommentEntity comment,
+        IReadOnlyDictionary<Guid, string> userLookup,
+        CancellationToken ct)
     {
-        var displayName = await _db.Users.AsNoTracking()
-            .Where(u => u.Id == comment.UserId)
-            .Select(u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName!)
-            .SingleOrDefaultAsync(ct);
+        // Try lookup first; fall back to single query only if user is not in the batch
+        var displayName = userLookup.TryGetValue(comment.UserId, out var name)
+            ? name
+            : await _db.Users.AsNoTracking()
+                .Where(u => u.Id == comment.UserId)
+                .Select(u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName!)
+                .SingleOrDefaultAsync(ct)
+            ?? "Unknown";
 
         return new HubCommentDto(
             comment.Id,
             comment.PostId,
             comment.UserId,
-            displayName ?? "Unknown",
+            displayName,
             comment.Text,
             comment.CreatedAtUtc,
             new Dictionary<string, int>(),
@@ -658,7 +680,7 @@ public sealed partial class EventsController
             .AsNoTracking()
             .Where(x =>
                 x.EventId == eventId
-                && x.Status == "approved"
+                && x.Status == ProposalStatus.Approved
                 && x.CategoryId != null
                 && categoryIds.Contains(x.CategoryId))
             .OrderBy(x => x.Title)
@@ -802,7 +824,7 @@ public sealed partial class EventsController
                 x.Id == request.OptionId
                 && x.EventId == eventId
                 && x.CategoryId == category.Id
-                && x.Status == "approved", ct);
+                && x.Status == ProposalStatus.Approved, ct);
 
         if (nominee is null) return BadRequest("Invalid option.");
 
@@ -879,7 +901,7 @@ public sealed partial class EventsController
             Description = string.IsNullOrWhiteSpace(request.Description)
                 ? null
                 : request.Description.Trim(),
-            Status = "pending",
+            Status = ProposalStatus.Pending,
             CreatedAtUtc = DateTime.UtcNow
         };
 

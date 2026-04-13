@@ -65,7 +65,7 @@ public sealed class NomineeEntity
 
     // pending | approved | rejected
     [Required]
-    public string Status { get; set; } = "pending";
+    public string Status { get; set; } = ProposalStatus.Pending;
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
@@ -89,7 +89,7 @@ public sealed class CategoryProposalEntity
 
     // pending | approved | rejected
     [Required]
-    public string Status { get; set; } = "pending";
+    public string Status { get; set; } = ProposalStatus.Pending;
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
@@ -127,7 +127,7 @@ public sealed class MeasureProposalEntity
 
     // pending | approved | rejected
     [Required]
-    public string Status { get; set; } = "pending";
+    public string Status { get; set; } = ProposalStatus.Pending;
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
@@ -181,7 +181,7 @@ public sealed class CanhoesEventStateEntity
 
     // nominations | voting | locked | gala
     [Required]
-    public string Phase { get; set; } = "nominations";
+    public string Phase { get; set; } = LegacyPhaseNames.Nominations;
 
     public bool NominationsVisible { get; set; } = true;
     public bool ResultsVisible { get; set; } = false;

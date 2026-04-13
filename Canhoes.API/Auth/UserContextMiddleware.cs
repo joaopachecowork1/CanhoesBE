@@ -33,14 +33,33 @@ public sealed class UserContextMiddleware
 
     public async Task Invoke(HttpContext ctx, CanhoesDbContext _db)
     {
-        if (ctx.User?.Identity?.IsAuthenticated == true)
+        var isMockAuth = ctx.Items.TryGetValue("MockAuthEmail", out var mockEmailObj)
+            && mockEmailObj is string mockEmail;
+
+        if (ctx.User?.Identity?.IsAuthenticated == true || isMockAuth)
         {
-            var sub = ctx.User.FindFirst("sub")?.Value
-                      ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            var email = ctx.User.FindFirst("email")?.Value
-                        ?? ctx.User.FindFirst(ClaimTypes.Email)?.Value;
-            var name = ctx.User.FindFirst("name")?.Value
-                       ?? ctx.User.FindFirst(ClaimTypes.Name)?.Value
+            string? sub = null;
+            string? email = null;
+
+            if (isMockAuth)
+            {
+                // Mock auth: use the email stored in Items by MockAuthMiddleware
+                email = mockEmailObj as string;
+                sub = email; // Use email as sub for mock users
+            }
+            else
+            {
+                // Real Google auth: extract claims
+                var principal = ctx.User!;
+                sub = principal.FindFirst("sub")?.Value
+                      ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                email = principal.FindFirst("email")?.Value
+                        ?? principal.FindFirst(ClaimTypes.Email)?.Value;
+            }
+
+            var name = ctx.User?.FindFirst("name")?.Value
+                       ?? ctx.User?.FindFirst(ClaimTypes.Name)?.Value
+                       ?? ctx.User?.FindFirst("displayName")?.Value
                        ?? email;
 
             if (!string.IsNullOrWhiteSpace(sub) && !string.IsNullOrWhiteSpace(email))
@@ -50,50 +69,55 @@ public sealed class UserContextMiddleware
 
                 if (user == null)
                 {
+                    var isAdminFromMock = isMockAuth
+                        && ctx.Items.TryGetValue("MockAuthIsAdmin", out var adminObj)
+                        && adminObj is bool adminBool && adminBool;
+
                     user = new UserEntity
                     {
-                        Id = Guid.NewGuid(),                    // ← ADICIONA ISTO
+                        Id = Guid.NewGuid(),
                         Email = email,
                         DisplayName = name,
                         ExternalId = sub,
-                        IsAdmin = !await _db.Users.AnyAsync(), // Primeiro user é admin
-                        CreatedAt = DateTime.UtcNow             // ← ADICIONA ISTO
+                        IsAdmin = isAdminFromMock || !await _db.Users.AnyAsync(),
+                        CreatedAt = DateTime.UtcNow
                     };
                     _db.Users.Add(user);
                     await _db.SaveChangesAsync();
                 }
 
+                // If mock auth and user is in admin list, ensure IsAdmin flag
+                if (isMockAuth)
+                {
+                    var isAdminFromMock = ctx.Items.TryGetValue("MockAuthIsAdmin", out var adminObj)
+                        && adminObj is bool adminBool && adminBool;
+
+                    if (isAdminFromMock && !user.IsAdmin)
+                    {
+                        user.IsAdmin = true;
+                        await _db.SaveChangesAsync();
+                    }
+
+                    ctx.Items["IsAdmin"] = user.IsAdmin;
+                }
+
                 ctx.Items["UserId"] = user.Id;
                 ctx.Items["IsAdmin"] = user.IsAdmin;
-                
-                _logger.LogInformation("User found: Email={Email}, IsAdmin={IsAdmin}, ExternalId={ExternalId}", user.Email, user.IsAdmin, user.ExternalId);
-                
-                // Apply optional admin allowlist (email) from config: Auth:AdminEmails: [ "email1", ... ]
+
+                // Apply optional admin allowlist (email) from config
                 try
                 {
                     var adminEmails = _config.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
-                    _logger.LogInformation("AdminEmails configured: {AdminEmailsCount} emails", adminEmails.Length);
-                    
+
                     if (adminEmails.Length > 0 && adminEmails.Any(e => string.Equals(e.Trim(), user.Email, StringComparison.OrdinalIgnoreCase)))
                     {
-                        _logger.LogInformation("User {Email} is in AdminEmails list", user.Email);
-                        
                         if (!user.IsAdmin)
                         {
                             user.IsAdmin = true;
                             await _db.SaveChangesAsync();
-                            _logger.LogInformation("User {Email} promoted to admin via allowlist.", user.Email);
                         }
-                        else
-                        {
-                            _logger.LogInformation("User {Email} is already admin", user.Email);
-                        }
-                        
+
                         ctx.Items["IsAdmin"] = true;
-                    }
-                    else
-                    {
-                        _logger.LogWarning("User {Email} is NOT in AdminEmails list", user.Email);
                     }
                 }
                 catch (Exception ex)
@@ -102,7 +126,7 @@ public sealed class UserContextMiddleware
                 }
 
                 _logger.LogDebug("Mapped token -> user: sub={Sub} email={Email} userId={UserId} isAdmin={IsAdmin}", sub, email, user.Id, user.IsAdmin);
-    
+
             }
         }
 

@@ -51,7 +51,7 @@ internal static class DbSeeder
         {
             Id = nextId,
             EventId = EventContextDefaults.DefaultEventId,
-            Phase = "nominations",
+            Phase = LegacyPhaseNames.Nominations,
             NominationsVisible = true,
             ResultsVisible = false,
             ModuleVisibilityJson = "{}"

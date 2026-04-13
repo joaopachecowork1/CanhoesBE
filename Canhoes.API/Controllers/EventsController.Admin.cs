@@ -254,79 +254,14 @@ public sealed partial class EventsController
         }
 
         var eventCode = NormalizeSecretSantaEventCode(eventId, request?.EventCode);
+        var result = await _secretSanta.ExecuteDrawAsync(_db, eventCode, participants, HttpContext.GetUserId(), ct);
 
-        var existingDraws = await _db.SecretSantaDraws
-            .Where(x => x.EventCode == eventCode)
-            .ToListAsync(ct);
-
-        if (existingDraws.Count > 0)
+        if (!result.IsSuccess)
         {
-            foreach (var existingDraw in existingDraws)
-            {
-                var existingAssignments = _db.SecretSantaAssignments.Where(x => x.DrawId == existingDraw.Id);
-                _db.SecretSantaAssignments.RemoveRange(existingAssignments);
-            }
-
-            _db.SecretSantaDraws.RemoveRange(existingDraws);
-            await _db.SaveChangesAsync(ct);
+            return BadRequest(result.ErrorMessage);
         }
 
-        var rng = new Random();
-        const int maxAttempts = 100;
-
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            var shuffledParticipants = participants.ToList();
-            for (var index = shuffledParticipants.Count - 1; index > 0; index--)
-            {
-                var swapIndex = rng.Next(index + 1);
-                (shuffledParticipants[index], shuffledParticipants[swapIndex]) =
-                    (shuffledParticipants[swapIndex], shuffledParticipants[index]);
-            }
-
-            var isValid = true;
-            for (var index = 0; index < participants.Count; index++)
-            {
-                if (participants[index].Id == shuffledParticipants[index].Id)
-                {
-                    isValid = false;
-                    break;
-                }
-            }
-
-            if (!isValid)
-            {
-                continue;
-            }
-
-            var draw = new SecretSantaDrawEntity
-            {
-                Id = Guid.NewGuid().ToString(),
-                EventCode = eventCode,
-                CreatedAtUtc = DateTime.UtcNow,
-                CreatedByUserId = HttpContext.GetUserId(),
-                IsLocked = true,
-            };
-
-            _db.SecretSantaDraws.Add(draw);
-
-            for (var index = 0; index < participants.Count; index++)
-            {
-                _db.SecretSantaAssignments.Add(new SecretSantaAssignmentEntity
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    DrawId = draw.Id,
-                    GiverUserId = participants[index].Id,
-                    ReceiverUserId = shuffledParticipants[index].Id,
-                });
-            }
-
-            await _db.SaveChangesAsync(ct);
-            return Ok(await BuildAdminSecretSantaStateDtoAsync(eventId, eventCode, ct));
-        }
-
-        return BadRequest(
-            $"Could not create a valid draw after {maxAttempts} attempts. Please try again.");
+        return Ok(await BuildAdminSecretSantaStateDtoAsync(eventId, eventCode, ct));
     }
 
     [HttpGet("{eventId}/admin/members")]
@@ -509,7 +444,7 @@ public sealed partial class EventsController
         var proposal = await FindMeasureProposalAsync(eventId, proposalId, ct);
         if (proposal is null) return NotFound();
 
-        proposal.Status = "approved";
+        proposal.Status = ProposalStatus.Approved;
 
         var measure = new GalaMeasureEntity
         {
@@ -539,7 +474,7 @@ public sealed partial class EventsController
         var proposal = await FindMeasureProposalAsync(eventId, proposalId, ct);
         if (proposal is null) return NotFound();
 
-        proposal.Status = "rejected";
+        proposal.Status = ProposalStatus.Rejected;
         await _db.SaveChangesAsync(ct);
 
         return Ok(ToMeasureProposalDto(proposal));
@@ -625,7 +560,7 @@ public sealed partial class EventsController
         if (string.IsNullOrWhiteSpace(nominee.CategoryId))
             return BadRequest("Nominee must have a category before approval.");
 
-        nominee.Status = "approved";
+        nominee.Status = ProposalStatus.Approved;
         await _db.SaveChangesAsync(ct);
 
         return Ok(ToNomineeDto(nominee));
@@ -641,7 +576,7 @@ public sealed partial class EventsController
         if (string.IsNullOrWhiteSpace(nominee.CategoryId))
             return BadRequest("Nominee must have a category before approval.");
 
-        nominee.Status = "approved";
+        nominee.Status = ProposalStatus.Approved;
         await _db.SaveChangesAsync(ct);
 
         return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
@@ -655,7 +590,7 @@ public sealed partial class EventsController
         var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
         if (nominee is null) return NotFound();
 
-        nominee.Status = "rejected";
+        nominee.Status = ProposalStatus.Rejected;
         await _db.SaveChangesAsync(ct);
 
         return Ok(ToNomineeDto(nominee));
@@ -669,7 +604,7 @@ public sealed partial class EventsController
         var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
         if (nominee is null) return NotFound();
 
-        nominee.Status = "rejected";
+        nominee.Status = ProposalStatus.Rejected;
         await _db.SaveChangesAsync(ct);
 
         return Ok(await BuildAdminNominationDtoAsync(nominee, ct));

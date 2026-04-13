@@ -143,7 +143,7 @@ public partial class CanhoesController
 
         if (users.Count < 2) return BadRequest("Need at least 2 members to draw.");
 
-        var rng = new Random();
+        var rng = Random.Shared;
         int maxAttempts = 100;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)

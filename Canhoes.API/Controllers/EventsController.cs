@@ -1,6 +1,7 @@
 using Canhoes.Api.Access;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
+using Canhoes.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -15,6 +16,7 @@ public sealed partial class EventsController : ControllerBase
 {
     private readonly CanhoesDbContext _db;
     private readonly IWebHostEnvironment? _env;
+    private readonly SecretSantaService _secretSanta;
 
     private sealed record EventAccessContext(
         EventEntity Event,
@@ -30,10 +32,11 @@ public sealed partial class EventsController : ControllerBase
         List<EventMemberEntity> Members,
         Dictionary<Guid, UserEntity> UsersById);
 
-    public EventsController(CanhoesDbContext db, IWebHostEnvironment? env = null)
+    public EventsController(CanhoesDbContext db, IWebHostEnvironment? env = null, SecretSantaService? secretSanta = null)
     {
         _db = db;
         _env = env;
+        _secretSanta = secretSanta!;
     }
 
     /// <summary>

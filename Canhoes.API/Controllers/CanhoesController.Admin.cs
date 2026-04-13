@@ -30,13 +30,13 @@ public partial class CanhoesController
         var allCatProposals = await catProposalsTask;
         var allMeasureProposals = await measureProposalsTask;
 
-        var catsPending = allCatProposals.Where(p => p.Status == "pending").Select(ToCategoryProposalDto);
-        var catsApproved = allCatProposals.Where(p => p.Status == "approved").Select(ToCategoryProposalDto);
-        var catsRejected = allCatProposals.Where(p => p.Status == "rejected").Select(ToCategoryProposalDto);
+        var catsPending = allCatProposals.Where(p => p.Status == ProposalStatus.Pending).Select(ToCategoryProposalDto);
+        var catsApproved = allCatProposals.Where(p => p.Status == ProposalStatus.Approved).Select(ToCategoryProposalDto);
+        var catsRejected = allCatProposals.Where(p => p.Status == ProposalStatus.Rejected).Select(ToCategoryProposalDto);
 
-        var measPending = allMeasureProposals.Where(p => p.Status == "pending").Select(ToMeasureProposalDto);
-        var measApproved = allMeasureProposals.Where(p => p.Status == "approved").Select(ToMeasureProposalDto);
-        var measRejected = allMeasureProposals.Where(p => p.Status == "rejected").Select(ToMeasureProposalDto);
+        var measPending = allMeasureProposals.Where(p => p.Status == ProposalStatus.Pending).Select(ToMeasureProposalDto);
+        var measApproved = allMeasureProposals.Where(p => p.Status == ProposalStatus.Approved).Select(ToMeasureProposalDto);
+        var measRejected = allMeasureProposals.Where(p => p.Status == ProposalStatus.Rejected).Select(ToMeasureProposalDto);
 
         var dto = new AdminProposalsHistoryDto(
             new ProposalsByStatus<CategoryProposalDto>(catsPending, catsApproved, catsRejected),
@@ -133,17 +133,17 @@ public partial class CanhoesController
 
         // OPTIMIZATION: Load all three tables in parallel (was sequential)
         var nomineesTask = _db.Nominees.AsNoTracking()
-            .Where(n => n.EventId == activeEventId && n.Status == "pending")
+            .Where(n => n.EventId == activeEventId && n.Status == ProposalStatus.Pending)
             .OrderByDescending(n => n.CreatedAtUtc)
             .ToListAsync(ct);
 
         var catProposalsTask = _db.CategoryProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "pending")
+            .Where(p => p.EventId == activeEventId && p.Status == ProposalStatus.Pending)
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
         var measureProposalsTask = _db.MeasureProposals.AsNoTracking()
-            .Where(p => p.EventId == activeEventId && p.Status == "pending")
+            .Where(p => p.EventId == activeEventId && p.Status == ProposalStatus.Pending)
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
@@ -182,7 +182,7 @@ public partial class CanhoesController
         var proposal = await FindCategoryProposalAsync(activeEventId, id, ct);
         if (proposal is null) return NotFound();
 
-        proposal.Status = "approved";
+        proposal.Status = ProposalStatus.Approved;
         var maxSort = await _db.AwardCategories
             .Where(c => c.EventId == activeEventId)
             .MaxAsync(c => (int?)c.SortOrder, ct) ?? 0;
@@ -210,7 +210,7 @@ public partial class CanhoesController
         var proposal = await FindCategoryProposalAsync(activeEventId, id, ct);
         if (proposal is null) return NotFound();
 
-        proposal.Status = "rejected";
+        proposal.Status = ProposalStatus.Rejected;
         await _db.SaveChangesAsync(ct);
         return ToCategoryProposalDto(proposal);
     }
@@ -224,7 +224,7 @@ public partial class CanhoesController
         var proposal = await FindMeasureProposalAsync(activeEventId, id, ct);
         if (proposal is null) return NotFound();
 
-        proposal.Status = "approved";
+        proposal.Status = ProposalStatus.Approved;
         var measure = new GalaMeasureEntity
         {
             Id = Guid.NewGuid().ToString(),
@@ -253,7 +253,7 @@ public partial class CanhoesController
 
         IQueryable<MeasureProposalEntity> query = _db.MeasureProposals.AsNoTracking()
             .Where(p => p.EventId == activeEventId);
-        if (normalized is "pending" or "approved" or "rejected")
+        if (ProposalStatus.IsValid(normalized))
         {
             query = query.Where(p => p.Status == normalized);
         }
@@ -287,7 +287,7 @@ public partial class CanhoesController
         if (!string.IsNullOrWhiteSpace(req.Status))
         {
             var statusValue = req.Status.Trim().ToLowerInvariant();
-            if (statusValue is not ("pending" or "approved" or "rejected"))
+            if (!ProposalStatus.IsValid(statusValue))
             {
                 return BadRequest("Invalid status. Use pending, approved or rejected.");
             }
@@ -323,7 +323,7 @@ public partial class CanhoesController
         var proposal = await FindMeasureProposalAsync(activeEventId, id, ct);
         if (proposal is null) return NotFound();
 
-        proposal.Status = "rejected";
+        proposal.Status = ProposalStatus.Rejected;
         await _db.SaveChangesAsync(ct);
         return ToMeasureProposalDto(proposal);
     }
@@ -373,7 +373,7 @@ public partial class CanhoesController
         if (nominee is null) return NotFound();
         if (string.IsNullOrWhiteSpace(nominee.CategoryId)) return BadRequest("Nominee must have a category before approval.");
 
-        nominee.Status = "approved";
+        nominee.Status = ProposalStatus.Approved;
         await _db.SaveChangesAsync(ct);
         return ToNomineeDto(nominee);
     }
@@ -387,7 +387,7 @@ public partial class CanhoesController
         var nominee = await FindNomineeAsync(activeEventId, id, ct);
         if (nominee is null) return NotFound();
 
-        nominee.Status = "rejected";
+        nominee.Status = ProposalStatus.Rejected;
         await _db.SaveChangesAsync(ct);
         return ToNomineeDto(nominee);
     }

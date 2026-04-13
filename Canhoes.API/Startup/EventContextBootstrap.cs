@@ -168,11 +168,11 @@ internal static class EventContextBootstrap
     {
         return legacyPhase.Trim().ToLowerInvariant() switch
         {
-            "nominations" => EventPhaseTypes.Proposals,
-            "voting" => EventPhaseTypes.Voting,
-            "gala" => EventPhaseTypes.Results,
-            "locked" when resultsVisible => EventPhaseTypes.Results,
-            "locked" => EventPhaseTypes.Draw,
+            LegacyPhaseNames.Nominations => EventPhaseTypes.Proposals,
+            LegacyPhaseNames.Voting => EventPhaseTypes.Voting,
+            LegacyPhaseNames.Gala => EventPhaseTypes.Results,
+            LegacyPhaseNames.Locked when resultsVisible => EventPhaseTypes.Results,
+            LegacyPhaseNames.Locked => EventPhaseTypes.Draw,
             _ => EventPhaseTypes.Draw
         };
     }

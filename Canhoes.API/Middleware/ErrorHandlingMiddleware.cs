@@ -7,9 +7,13 @@ public class ErrorHandlingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ErrorHandlingMiddleware> _logger;
-    public ErrorHandlingMiddleware(RequestDelegate next, ILogger<ErrorHandlingMiddleware> logger)
+    private readonly IWebHostEnvironment _env;
+
+    public ErrorHandlingMiddleware(RequestDelegate next, ILogger<ErrorHandlingMiddleware> logger, IWebHostEnvironment env)
     {
-        _next = next; _logger = logger;
+        _next = next;
+        _logger = logger;
+        _env = env;
     }
 
     public async Task Invoke(HttpContext context)
@@ -20,18 +24,21 @@ public class ErrorHandlingMiddleware
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled exception");
+            _logger.LogError(ex, "Unhandled exception processing request {Method} {Path}.", context.Request.Method, context.Request.Path);
+
             context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
             context.Response.ContentType = "application/problem+json";
+
             var problem = new
             {
                 code = "UNHANDLED_SERVER_ERROR",
                 title = "Unhandled server error",
                 message = "The server failed to process the request.",
                 status = 500,
-                detail = ex.Message,
+                detail = _env.IsDevelopment() ? ex.Message : null,
                 traceId = context.TraceIdentifier
             };
+
             await context.Response.WriteAsync(JsonSerializer.Serialize(problem));
         }
     }
