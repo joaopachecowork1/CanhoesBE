@@ -52,8 +52,12 @@ packages/
 # ==============================
 # Local environment configuration
 # ==============================
-appsettings.Development.json
+appsettings.*.json
+appsettings.*.json.user
 *.env
+*.env.local
+.env.local
+.env.*.local
 
 # ==============================
 # SSDT artifacts
