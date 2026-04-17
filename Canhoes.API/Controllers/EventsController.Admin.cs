@@ -3,6 +3,7 @@ using Canhoes.Api.Auth;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using static Canhoes.Api.Controllers.EventsControllerMappers;
 
 namespace Canhoes.Api.Controllers;
 

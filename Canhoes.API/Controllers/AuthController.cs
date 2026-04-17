@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Canhoes.Api.DTOs;
-using Canhoes.BL.Interfaces;
+using Canhoes.Api.Auth;
 
 namespace Canhoes.Api.Controllers;
 

@@ -14,21 +14,16 @@ public partial class CanhoesController
         var (activeEventId, error) = await RequireAdminActiveEventIdAsync(ct);
         if (error is not null) return error;
 
-        // OPTIMIZATION: Load both tables in parallel (was sequential)
-        var catProposalsTask = _db.CategoryProposals.AsNoTracking()
+        // Sequential execution to avoid DbContext threading issues
+        var allCatProposals = await _db.CategoryProposals.AsNoTracking()
             .Where(p => p.EventId == activeEventId)
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
 
-        var measureProposalsTask = _db.MeasureProposals.AsNoTracking()
+        var allMeasureProposals = await _db.MeasureProposals.AsNoTracking()
             .Where(p => p.EventId == activeEventId)
             .OrderByDescending(p => p.CreatedAtUtc)
             .ToListAsync(ct);
-
-        await Task.WhenAll(catProposalsTask, measureProposalsTask);
-
-        var allCatProposals = await catProposalsTask;
-        var allMeasureProposals = await measureProposalsTask;
 
         var catsPending = allCatProposals.Where(p => p.Status == ProposalStatus.Pending).Select(ToCategoryProposalDto);
         var catsApproved = allCatProposals.Where(p => p.Status == ProposalStatus.Approved).Select(ToCategoryProposalDto);

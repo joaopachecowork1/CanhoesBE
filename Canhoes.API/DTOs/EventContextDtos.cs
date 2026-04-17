@@ -1,4 +1,4 @@
-namespace Canhoes.Api.Models;
+namespace Canhoes.Api.DTOs;
 
 /// <summary>
 /// Minimal event identity used by chrome, lists and overview payloads.

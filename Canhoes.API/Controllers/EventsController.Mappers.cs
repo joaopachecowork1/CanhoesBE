@@ -1,6 +1,7 @@
 using Canhoes.Api.Access;
 using Canhoes.Api.Models;
 using Microsoft.EntityFrameworkCore;
+using static Canhoes.Api.Controllers.EventsControllerMappers;
 
 namespace Canhoes.Api.Controllers;
 
@@ -94,39 +95,28 @@ public sealed partial class EventsController
             );
         }
 
-        // OPTIMIZATION: Parallelize independent data loads
-        // Group 1: Categories + Members + SecretSanta (independent reads)
-        var categoriesTask = LoadAdminCategoriesAsync(eventId, ct);
-        var membersTask = LoadAdminMembersAsync(eventId, ct);
-        var secretSantaTask = BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
-
-        // Group 2: Nominees + Proposals (independent reads)
-        var nomineesTask = LoadAdminNomineeDtosAsync(eventId, null, ct);
-        var adminNomineesTask = LoadAdminNominationDtosAsync(eventId, null, ct);
-        var proposalsTask = BuildAdminProposalsHistoryDtoAsync(eventId, ct);
-
-        // Group 3: Votes + OfficialResults (reads UserVotes independently)
-        var votesTask = BuildAdminVotesDtoAsync(eventId, ct);
-        var officialResultsTask = BuildAdminOfficialResultsDtoAsync(eventId, ct);
-
-        // Execute all groups in parallel
-        await Task.WhenAll(
-            categoriesTask, membersTask, secretSantaTask,
-            nomineesTask, adminNomineesTask, proposalsTask,
-            votesTask, officialResultsTask);
+        // Sequential execution to avoid DbContext threading issues
+        var categories = await LoadAdminCategoriesAsync(eventId, ct);
+        var members = await LoadAdminMembersAsync(eventId, ct);
+        var secretSanta = await BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
+        var nominees = await LoadAdminNomineeDtosAsync(eventId, null, ct);
+        var adminNominees = await LoadAdminNominationDtosAsync(eventId, null, ct);
+        var proposals = await BuildAdminProposalsHistoryDtoAsync(eventId, ct);
+        var votes = await BuildAdminVotesDtoAsync(eventId, ct);
+        var officialResults = await BuildAdminOfficialResultsDtoAsync(eventId, ct);
 
         return new EventAdminBootstrapDto(
             events,
             state,
             counts,
-            await categoriesTask,
-            await nomineesTask,
-            await adminNomineesTask,
-            await proposalsTask,
-            await votesTask,
-            await membersTask,
-            await secretSantaTask,
-            await officialResultsTask
+            categories,
+            nominees,
+            adminNominees,
+            proposals,
+            votes,
+            members,
+            secretSanta,
+            officialResults
         );
     }
 
@@ -134,14 +124,14 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        // Parallelize independent count queries
-        var categoryIdsTask = _db.AwardCategories
+        // Sequential execution to avoid DbContext threading issues
+        var categoryIds = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .Select(x => x.Id)
             .ToListAsync(ct);
 
-        var categoryProposalsTask = _db.CategoryProposals
+        var categoryProposals = await _db.CategoryProposals
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .GroupBy(_ => 1)
@@ -152,7 +142,7 @@ public sealed partial class EventsController
             })
             .FirstOrDefaultAsync(ct);
 
-        var measureProposalsTask = _db.MeasureProposals
+        var measureProposals = await _db.MeasureProposals
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .GroupBy(_ => 1)
@@ -163,29 +153,17 @@ public sealed partial class EventsController
             })
             .FirstOrDefaultAsync(ct);
 
-        var nomineesTask = _db.Nominees
+        var nomineesCount = await _db.Nominees
             .AsNoTracking()
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var membersTask = _db.EventMembers
+        var membersCount = await _db.EventMembers
             .AsNoTracking()
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var voteCategoriesTask = _db.AwardCategories
+        var voteCategoriesCount = await _db.AwardCategories
             .AsNoTracking()
             .CountAsync(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote, ct);
-
-        await Task.WhenAll(
-            categoryIdsTask,
-            categoryProposalsTask,
-            measureProposalsTask,
-            nomineesTask,
-            membersTask,
-            voteCategoriesTask);
-
-        var categoryIds = categoryIdsTask.Result;
-        var categoryProposals = categoryProposalsTask.Result;
-        var measureProposals = measureProposalsTask.Result;
 
         var votesTotal = categoryIds.Count == 0
             ? 0
@@ -194,15 +172,15 @@ public sealed partial class EventsController
                 .CountAsync(x => categoryIds.Contains(x.CategoryId), ct);
 
         return new AdminListCountsDto(
-            nomineesTask.Result,
-            nomineesTask.Result, // adminNomineesTotal = same source
+            nomineesCount,
+            nomineesCount, // adminNomineesTotal = same source
             votesTotal,
             categoryProposals?.Total ?? 0,
             categoryProposals?.Pending ?? 0,
             measureProposals?.Total ?? 0,
             measureProposals?.Pending ?? 0,
-            membersTask.Result,
-            voteCategoriesTask.Result
+            membersCount,
+            voteCategoriesCount
         );
     }
 
@@ -362,21 +340,18 @@ public sealed partial class EventsController
         // OPTIMIZATION: Limit to most recent 500 votes to prevent memory overload
         // Use the paginated endpoint ({eventId}/admin/votes/paged) for full access
         const int maxVotes = 500;
-        var votesTask = _db.Votes
+        var votes = await _db.Votes
             .AsNoTracking()
             .Where(x => categoryIds.Contains(x.CategoryId))
             .OrderByDescending(x => x.UpdatedAtUtc)
             .Take(maxVotes)
             .ToListAsync(ct);
 
-        var categoriesTask = _db.AwardCategories
+        var categories = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => categoryIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, ct);
 
-        await Task.WhenAll(votesTask, categoriesTask);
-
-        var votes = votesTask.Result;
         if (votes.Count == 0)
         {
             return new AdminVotesDto(0, []);
@@ -391,7 +366,7 @@ public sealed partial class EventsController
 
         var enrichedVotes = votes.Select(vote =>
         {
-            var categoryName = categoriesTask.Result.TryGetValue(vote.CategoryId, out var cat)
+            var categoryName = categories.TryGetValue(vote.CategoryId, out var cat)
                 ? cat.Name
                 : vote.CategoryId;
 
@@ -416,20 +391,16 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        // Load categories and member directory in parallel
-        var categoriesTask = _db.AwardCategories
+        // Sequential execution to avoid DbContext threading issues
+        var categories = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
             .ToListAsync(ct);
 
-        var directoryTask = LoadEventMemberDirectoryAsync(eventId, ct);
+        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
 
-        await Task.WhenAll(categoriesTask, directoryTask);
-
-        var categories = categoriesTask.Result;
-        var directory = directoryTask.Result;
         var usersById = directory.UsersById;
         var totalMembers = directory.Members
             .Select(member => member.UserId)
@@ -567,180 +538,6 @@ public sealed partial class EventsController
             .ToList();
     }
 
-    private static EventSummaryDto ToEventSummaryDto(EventEntity entity) =>
-        new(entity.Id, entity.Name, entity.IsActive);
-
-    private static EventPhaseDto ToEventPhaseDto(EventPhaseEntity entity) =>
-        new(
-            entity.Id,
-            entity.Type,
-            new DateTimeOffset(entity.StartDateUtc, TimeSpan.Zero),
-            new DateTimeOffset(entity.EndDateUtc, TimeSpan.Zero),
-            entity.IsActive
-        );
-
-    private static EventCategoryDto ToEventCategoryDto(AwardCategoryEntity entity) =>
-        new(entity.Id, entity.EventId, entity.Name, entity.Kind.ToString(), entity.IsActive, entity.Description);
-
-    private static AwardCategoryDto ToAwardCategoryDto(AwardCategoryEntity entity) =>
-        new(
-            entity.Id,
-            entity.Name,
-            entity.SortOrder,
-            entity.IsActive,
-            entity.Kind.ToString(),
-            entity.Description,
-            entity.VoteQuestion,
-            entity.VoteRules
-        );
-
-    private static PublicUserDto ToPublicUserDto(UserEntity entity, bool isAdmin) =>
-        new(entity.Id, entity.Email, entity.DisplayName, isAdmin);
-
-    private static NomineeDto ToNomineeDto(NomineeEntity entity) =>
-        new(
-            entity.Id,
-            entity.CategoryId,
-            entity.Title,
-            entity.ImageUrl,
-            entity.Status,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static AdminNomineeDto ToAdminNomineeDto(
-        NomineeEntity entity,
-        string submittedByName) =>
-        new(
-            entity.Id,
-            entity.CategoryId,
-            entity.Title,
-            entity.ImageUrl,
-            entity.Status,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero),
-            entity.SubmittedByUserId,
-            submittedByName
-        );
-
-    private static CategoryProposalDto ToCategoryProposalDto(CategoryProposalEntity entity) =>
-        new(
-            entity.Id,
-            entity.Name,
-            entity.Description,
-            entity.Status,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static MeasureProposalDto ToMeasureProposalDto(MeasureProposalEntity entity) =>
-        new(
-            entity.Id,
-            entity.Text,
-            entity.Status,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static EventFeedPostDto ToEventFeedPostDto(
-        HubPostEntity entity,
-        string authorName,
-        List<string> mediaUrls) =>
-        new(
-            entity.Id,
-            entity.EventId,
-            entity.AuthorUserId,
-            authorName,
-            entity.Text,
-            mediaUrls.FirstOrDefault(),
-            mediaUrls,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static EventFeedPostFullDto ToEventFeedPostFullDto(
-        HubPostEntity entity,
-        string authorName,
-        List<string> mediaUrls,
-        int likeCount,
-        int commentCount,
-        int downvoteCount,
-        Dictionary<string, int> reactionCounts,
-        List<string> myReactions,
-        bool likedByMe,
-        bool downvotedByMe,
-        EventFeedPollDto? poll) =>
-        new(
-            entity.Id,
-            entity.EventId,
-            entity.AuthorUserId.ToString(),
-            authorName,
-            entity.Text,
-            mediaUrls.FirstOrDefault(),
-            mediaUrls,
-            entity.IsPinned,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero),
-            likeCount,
-            commentCount,
-            downvoteCount,
-            reactionCounts,
-            myReactions,
-            likedByMe,
-            downvotedByMe,
-            poll
-        );
-
-    /// <summary>
-    /// @deprecated Use enriched BuildAdminVotesDtoAsync instead, which resolves
-    /// category and user names. Kept for legacy compatibility only.
-    /// </summary>
-    private static AdminVoteAuditRowLegacyDto ToAdminVoteAuditRowDto(VoteEntity entity) =>
-        new(
-            entity.CategoryId,
-            entity.NomineeId,
-            entity.UserId,
-            new DateTimeOffset(entity.UpdatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static EventWishlistItemDto ToEventWishlistItemDto(WishlistItemEntity entity) =>
-        new(
-            entity.Id,
-            entity.UserId,
-            entity.EventId,
-            entity.Title,
-            entity.Url,
-            entity.Notes,
-            entity.ImageUrl,
-            new DateTimeOffset(entity.UpdatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static EventProposalDto ToEventProposalDto(CategoryProposalEntity entity) =>
-        new(
-            entity.Id,
-            entity.EventId,
-            entity.ProposedByUserId,
-            entity.Name,
-            entity.Description,
-            entity.Status,
-            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
-        );
-
-    private static ProposalsByStatusDto<T> BuildProposalHistory<T>(
-        List<T> items,
-        Func<T, string> statusSelector) =>
-        new(
-            items.Where(item => string.Equals(
-                statusSelector(item),
-                ProposalStatus.Pending,
-                StringComparison.OrdinalIgnoreCase)).ToList(),
-            items.Where(item => string.Equals(
-                statusSelector(item),
-                ProposalStatus.Approved,
-                StringComparison.OrdinalIgnoreCase)).ToList(),
-            items.Where(item => string.Equals(
-                statusSelector(item),
-                ProposalStatus.Rejected,
-                StringComparison.OrdinalIgnoreCase)).ToList()
-        );
-
-    private static string GetUserName(UserEntity user) =>
-        string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName!;
-
     // ---------- Paginated methods ----------
 
     private async Task<AdminVotesPagedDto> BuildAdminVotesPagedDtoAsync(
@@ -766,8 +563,8 @@ public sealed partial class EventsController
             return new AdminVotesPagedDto(0, [], skip, take, false);
         }
 
-        // Load paged votes and categories in parallel
-        var votesTask = _db.Votes
+        // Sequential execution to avoid DbContext threading issues
+        var votes = await _db.Votes
             .AsNoTracking()
             .Where(x => categoryIds.Contains(x.CategoryId))
             .OrderByDescending(x => x.UpdatedAtUtc)
@@ -775,14 +572,11 @@ public sealed partial class EventsController
             .Take(take)
             .ToListAsync(ct);
 
-        var categoriesTask = _db.AwardCategories
+        var categories = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => categoryIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, ct);
 
-        await Task.WhenAll(votesTask, categoriesTask);
-
-        var votes = votesTask.Result;
         if (votes.Count == 0)
         {
             return new AdminVotesPagedDto(total, [], skip, take, false);
@@ -797,7 +591,7 @@ public sealed partial class EventsController
 
         var enrichedVotes = votes.Select(vote =>
         {
-            var categoryName = categoriesTask.Result.TryGetValue(vote.CategoryId, out var cat)
+            var categoryName = categories.TryGetValue(vote.CategoryId, out var cat)
                 ? cat.Name
                 : vote.CategoryId;
 
@@ -1134,4 +928,181 @@ public sealed partial class EventsController
             );
         }).ToList();
     }
+}
+
+internal static class EventsControllerMappers
+{
+    internal static EventSummaryDto ToEventSummaryDto(EventEntity entity) =>
+        new(entity.Id, entity.Name, entity.IsActive);
+
+    internal static EventPhaseDto ToEventPhaseDto(EventPhaseEntity entity) =>
+        new(
+            entity.Id,
+            entity.Type,
+            new DateTimeOffset(entity.StartDateUtc, TimeSpan.Zero),
+            new DateTimeOffset(entity.EndDateUtc, TimeSpan.Zero),
+            entity.IsActive
+        );
+
+    internal static EventCategoryDto ToEventCategoryDto(AwardCategoryEntity entity) =>
+        new(entity.Id, entity.EventId, entity.Name, entity.Kind.ToString(), entity.IsActive, entity.Description);
+
+    internal static AwardCategoryDto ToAwardCategoryDto(AwardCategoryEntity entity) =>
+        new(
+            entity.Id,
+            entity.Name,
+            entity.SortOrder,
+            entity.IsActive,
+            entity.Kind.ToString(),
+            entity.Description,
+            entity.VoteQuestion,
+            entity.VoteRules
+        );
+
+    internal static PublicUserDto ToPublicUserDto(UserEntity entity, bool isAdmin) =>
+        new(entity.Id, entity.Email, entity.DisplayName, isAdmin);
+
+    internal static NomineeDto ToNomineeDto(NomineeEntity entity) =>
+        new(
+            entity.Id,
+            entity.CategoryId,
+            entity.Title,
+            entity.ImageUrl,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static AdminNomineeDto ToAdminNomineeDto(
+        NomineeEntity entity,
+        string submittedByName) =>
+        new(
+            entity.Id,
+            entity.CategoryId,
+            entity.Title,
+            entity.ImageUrl,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero),
+            entity.SubmittedByUserId,
+            submittedByName
+        );
+
+    internal static CategoryProposalDto ToCategoryProposalDto(CategoryProposalEntity entity) =>
+        new(
+            entity.Id,
+            entity.Name,
+            entity.Description,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static MeasureProposalDto ToMeasureProposalDto(MeasureProposalEntity entity) =>
+        new(
+            entity.Id,
+            entity.Text,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static EventFeedPostDto ToEventFeedPostDto(
+        HubPostEntity entity,
+        string authorName,
+        List<string> mediaUrls) =>
+        new(
+            entity.Id,
+            entity.EventId,
+            entity.AuthorUserId,
+            authorName,
+            entity.Text,
+            mediaUrls.FirstOrDefault(),
+            mediaUrls,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static EventFeedPostFullDto ToEventFeedPostFullDto(
+        HubPostEntity entity,
+        string authorName,
+        List<string> mediaUrls,
+        int likeCount,
+        int commentCount,
+        int downvoteCount,
+        Dictionary<string, int> reactionCounts,
+        List<string> myReactions,
+        bool likedByMe,
+        bool downvotedByMe,
+        EventFeedPollDto? poll) =>
+        new(
+            entity.Id,
+            entity.EventId,
+            entity.AuthorUserId.ToString(),
+            authorName,
+            entity.Text,
+            mediaUrls.FirstOrDefault(),
+            mediaUrls,
+            entity.IsPinned,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero),
+            likeCount,
+            commentCount,
+            downvoteCount,
+            reactionCounts,
+            myReactions,
+            likedByMe,
+            downvotedByMe,
+            poll
+        );
+
+    /// <summary>
+    /// @deprecated Use enriched BuildAdminVotesDtoAsync instead, which resolves
+    /// category and user names. Kept for legacy compatibility only.
+    /// </summary>
+    internal static AdminVoteAuditRowLegacyDto ToAdminVoteAuditRowDto(VoteEntity entity) =>
+        new(
+            entity.CategoryId,
+            entity.NomineeId,
+            entity.UserId,
+            new DateTimeOffset(entity.UpdatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static EventWishlistItemDto ToEventWishlistItemDto(WishlistItemEntity entity) =>
+        new(
+            entity.Id,
+            entity.UserId,
+            entity.EventId,
+            entity.Title,
+            entity.Url,
+            entity.Notes,
+            entity.ImageUrl,
+            new DateTimeOffset(entity.UpdatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static EventProposalDto ToEventProposalDto(CategoryProposalEntity entity) =>
+        new(
+            entity.Id,
+            entity.EventId,
+            entity.ProposedByUserId,
+            entity.Name,
+            entity.Description,
+            entity.Status,
+            new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
+        );
+
+    internal static ProposalsByStatusDto<T> BuildProposalHistory<T>(
+        List<T> items,
+        Func<T, string> statusSelector) =>
+        new(
+            items.Where(item => string.Equals(
+                statusSelector(item),
+                ProposalStatus.Pending,
+                StringComparison.OrdinalIgnoreCase)).ToList(),
+            items.Where(item => string.Equals(
+                statusSelector(item),
+                ProposalStatus.Approved,
+                StringComparison.OrdinalIgnoreCase)).ToList(),
+            items.Where(item => string.Equals(
+                statusSelector(item),
+                ProposalStatus.Rejected,
+                StringComparison.OrdinalIgnoreCase)).ToList()
+        );
+
+    internal static string GetUserName(UserEntity user) =>
+        string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName!;
 }

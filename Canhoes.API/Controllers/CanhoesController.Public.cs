@@ -324,30 +324,24 @@ public partial class CanhoesController
 
         var eventId = access.EventId;
 
-        // OPTIMIZATION: Load categories, nominees, and vote counts in parallel
-        var categoriesTask = _db.AwardCategories.AsNoTracking()
+        // Sequential execution to avoid DbContext threading issues
+        var categories = await _db.AwardCategories.AsNoTracking()
             .Where(c => c.EventId == eventId && c.IsActive)
             .OrderBy(c => c.SortOrder)
             .Select(c => new { c.Id, c.Name, c.SortOrder })
             .ToListAsync(ct);
 
-        var nomineesTask = _db.Nominees.AsNoTracking()
+        var nominees = await _db.Nominees.AsNoTracking()
             .Where(n => n.EventId == eventId && n.Status == ProposalStatus.Approved && n.CategoryId != null)
             .Select(n => new { n.Id, n.CategoryId, n.Title, n.ImageUrl })
             .ToListAsync(ct);
 
         // OPTIMIZATION: Use GROUP BY to count votes per nominee in the database
-        var voteCountsTask = _db.Votes.AsNoTracking()
+        var voteCounts = await _db.Votes.AsNoTracking()
             .Where(v => _db.AwardCategories.Any(c => c.EventId == eventId && c.IsActive && c.Id == v.CategoryId))
             .GroupBy(v => new { v.CategoryId, v.NomineeId })
             .Select(g => new { g.Key.CategoryId, g.Key.NomineeId, Count = g.Count() })
             .ToListAsync(ct);
-
-        await Task.WhenAll(categoriesTask, nomineesTask, voteCountsTask);
-
-        var categories = await categoriesTask;
-        var nominees = await nomineesTask;
-        var voteCounts = await voteCountsTask;
 
         // Build lookup dictionaries for O(1) access
         var voteCountByCategoryNominee = voteCounts

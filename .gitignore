@@ -39,6 +39,8 @@ packages/
 *.tmp
 *.temp
 *.cache
+.dotnet/
+/dotnet
 
 # ==============================
 # Local databases
@@ -64,3 +66,9 @@ appsettings.*.json.user
 # ==============================
 *.dbmdl
 *.jfm
+
+# ==============================
+# Local tool state / scratch
+# ==============================
+.qwen/
+estrutura-be.txt

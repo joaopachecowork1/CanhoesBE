@@ -1,4 +1,4 @@
-namespace Canhoes.Api.Models;
+namespace Canhoes.Api.DTOs;
 
 // ------------------------------
 // Canhões do Ano (fun awards)

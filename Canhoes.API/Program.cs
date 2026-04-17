@@ -11,8 +11,6 @@ using Canhoes.Api.Middleware;
 using Canhoes.Api.Services;
 using Canhoes.Api.Startup;
 using Canhoes.Api.Caching;
-using Canhoes.BL.Interfaces;
-using Canhoes.BL.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 

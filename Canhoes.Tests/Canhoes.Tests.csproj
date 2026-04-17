@@ -6,9 +6,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 	</PropertyGroup>
 	<ItemGroup>
-		<ProjectReference Include="..\Canhoes.API\Canhoes.API.csproj" />
-		<ProjectReference Include="..\Canhoes.Domain\Canhoes.Domain.csproj" />
-		<ProjectReference Include="..\Canhoes.Infrastructure\Canhoes.Infrastructure.csproj" />
+		<ProjectReference Include="..\Canhoes.API\Canhoes.Api.csproj" />
 	</ItemGroup>
 	<ItemGroup>
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />

@@ -2,8 +2,6 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY ["Canhoes.API/Canhoes.Api.csproj", "Canhoes.API/"]
-COPY ["Canhoes.BL/Canhoes.BL.csproj", "Canhoes.BL/"]
-COPY ["Canhoes.Infrastructure/Canhoes.Infrastructure.csproj", "Canhoes.Infrastructure/"]
 
 RUN dotnet restore "Canhoes.API/Canhoes.Api.csproj"
 

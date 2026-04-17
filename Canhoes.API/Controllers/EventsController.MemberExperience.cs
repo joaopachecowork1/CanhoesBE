@@ -5,6 +5,7 @@ using Canhoes.Api.Media;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using static Canhoes.Api.Controllers.EventsControllerMappers;
 
 namespace Canhoes.Api.Controllers;
 
@@ -250,12 +251,11 @@ public sealed partial class EventsController
         var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (error is not null) return error;
 
-        // Check poll and post existence in a single parallel query
-        var pollTask = _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
-        var postTask = _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        await Task.WhenAll(pollTask, postTask);
+        // Sequential checks to avoid DbContext threading issues
+        var hasPoll = await _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
+        var hasPost = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
 
-        if (!pollTask.Result || !postTask.Result) return NotFound();
+        if (!hasPoll || !hasPost) return NotFound();
 
         var optionId = req.OptionId.Trim();
         var optionExists = await _db.HubPostPollOptions.AsNoTracking().AnyAsync(x => x.Id == optionId && x.PostId == postId, ct);

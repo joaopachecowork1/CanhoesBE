@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using static Canhoes.Api.Controllers.EventsControllerMappers;
 
 namespace Canhoes.Api.Controllers;
 
