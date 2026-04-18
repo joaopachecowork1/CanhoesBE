@@ -141,6 +141,7 @@ public sealed partial class EventsController
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
 
+        _ = includeLists;
         return Ok(await BuildAdminBootstrapDtoAsync(eventId, includeLists, ct));
     }
 
@@ -265,56 +266,6 @@ public sealed partial class EventsController
         return Ok(await BuildAdminSecretSantaStateDtoAsync(eventId, eventCode, ct));
     }
 
-    [HttpGet("{eventId}/admin/members")]
-    public async Task<ActionResult<PagedResult<PublicUserDto>>> AdminGetMembers(
-        [FromRoute] string eventId,
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 50,
-        CancellationToken ct = default)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        take = Math.Clamp(take, 1, 200);
-        skip = Math.Max(0, skip);
-
-        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var allMembers = directory.Members;
-        var usersById = directory.UsersById;
-        var total = allMembers.Count;
-
-        var pagedMembers = allMembers
-            .OrderByDescending(member => member.Role == EventRoles.Admin)
-            .ThenBy(member => GetUserName(usersById[member.UserId]))
-            .Skip(skip)
-            .Take(take)
-            .ToList();
-
-        var dtos = pagedMembers
-            .Where(member => usersById.ContainsKey(member.UserId))
-            .Select(member => ToPublicUserDto(
-                usersById[member.UserId],
-                member.Role == EventRoles.Admin))
-            .ToList();
-
-        return new PagedResult<PublicUserDto>(dtos, total, skip, take, (skip + take) < total);
-    }
-
-    [HttpGet("{eventId}/admin/votes")]
-    public async Task<ActionResult<AdminVotesDto>> AdminVotes([FromRoute] string eventId, CancellationToken ct)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        return Ok(await BuildAdminVotesDtoAsync(eventId, ct));
-    }
-
-    [HttpGet("{eventId}/admin/official-results")]
-    public async Task<ActionResult<AdminOfficialResultsDto>> AdminGetOfficialResults([FromRoute] string eventId, CancellationToken ct)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        return Ok(await BuildAdminOfficialResultsDtoAsync(eventId, ct));
-    }
-
     [HttpGet("{eventId}/admin/category-proposals")]
     public async Task<ActionResult<PagedResult<CategoryProposalDto>>> AdminGetCategoryProposals(
         [FromRoute] string eventId,
@@ -346,7 +297,7 @@ public sealed partial class EventsController
             .ToListAsync(ct);
 
         var dtos = proposals.Select(ToCategoryProposalDto).ToList();
-        return new PagedResult<CategoryProposalDto>(dtos, total, skip, take, (skip + take) < total);
+        return new PagedResult<CategoryProposalDto>(dtos, total, skip, take, skip + dtos.Count < total);
     }
 
     [HttpPatch("{eventId}/admin/category-proposals/{proposalId}")]
@@ -402,14 +353,6 @@ public sealed partial class EventsController
         return NoContent();
     }
 
-    [HttpGet("{eventId}/admin/proposals")]
-    public async Task<ActionResult<AdminProposalsHistoryDto>> AdminGetProposalsHistory([FromRoute] string eventId, CancellationToken ct)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        return Ok(await BuildAdminProposalsHistoryDtoAsync(eventId, ct));
-    }
-
     [HttpGet("{eventId}/admin/measure-proposals")]
     public async Task<ActionResult<PagedResult<MeasureProposalDto>>> AdminGetMeasureProposals(
         [FromRoute] string eventId,
@@ -441,7 +384,7 @@ public sealed partial class EventsController
             .ToListAsync(ct);
 
         var dtos = proposals.Select(ToMeasureProposalDto).ToList();
-        return new PagedResult<MeasureProposalDto>(dtos, total, skip, take, (skip + take) < total);
+        return new PagedResult<MeasureProposalDto>(dtos, total, skip, take, skip + dtos.Count < total);
     }
 
     [HttpPatch("{eventId}/admin/measure-proposals/{proposalId}")]
@@ -531,116 +474,6 @@ public sealed partial class EventsController
         return Ok(ToMeasureProposalDto(proposal));
     }
 
-    [HttpGet("{eventId}/admin/nominees")]
-    public async Task<ActionResult<PagedResult<NomineeDto>>> AdminGetNominees(
-        [FromRoute] string eventId,
-        [FromQuery] string? status,
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 50,
-        CancellationToken ct = default)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        take = Math.Clamp(take, 1, 200);
-        skip = Math.Max(0, skip);
-
-        var normalizedStatus = NormalizeNomineeStatusFilter(status);
-        var query = _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId);
-
-        if (normalizedStatus is not null)
-        {
-            query = query.Where(x => x.Status == normalizedStatus);
-        }
-
-        var total = await query.CountAsync(ct);
-        var nominees = await query
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Skip(skip)
-            .Take(take)
-            .ToListAsync(ct);
-
-        var dtos = nominees.Select(ToNomineeDto).ToList();
-        return new PagedResult<NomineeDto>(dtos, total, skip, take, (skip + take) < total);
-    }
-
-    [HttpGet("{eventId}/admin/nominations")]
-    public async Task<ActionResult<PagedResult<AdminNomineeDto>>> AdminGetNominations(
-        [FromRoute] string eventId,
-        [FromQuery] string? status,
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 50,
-        CancellationToken ct = default)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        take = Math.Clamp(take, 1, 200);
-        skip = Math.Max(0, skip);
-
-        var normalizedStatus = NormalizeNomineeStatusFilter(status);
-        var query = _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId);
-
-        if (normalizedStatus is not null)
-        {
-            query = query.Where(x => x.Status == normalizedStatus);
-        }
-
-        var total = await query.CountAsync(ct);
-        var nominees = await query
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Skip(skip)
-            .Take(take)
-            .ToListAsync(ct);
-
-        // Batch load user names for all nominees
-        var submittedByIds = nominees.Select(x => x.SubmittedByUserId).Distinct().ToList();
-        var usersById = submittedByIds.Count == 0
-            ? new Dictionary<Guid, string>()
-            : await _db.Users
-                .AsNoTracking()
-                .Where(x => submittedByIds.Contains(x.Id))
-                .ToDictionaryAsync(x => x.Id, x => GetUserName(x), ct);
-
-        var dtos = nominees.Select(entity =>
-        {
-            var submittedByName = usersById.TryGetValue(entity.SubmittedByUserId, out var name)
-                ? name
-                : entity.SubmittedByUserId.ToString();
-
-            return ToAdminNomineeDto(entity, submittedByName);
-        }).ToList();
-
-        return new PagedResult<AdminNomineeDto>(dtos, total, skip, take, (skip + take) < total);
-    }
-
-    [HttpPost("{eventId}/admin/nominees/{nomineeId}/set-category")]
-    public async Task<ActionResult<NomineeDto>> AdminSetNomineeCategory([FromRoute] string eventId, [FromRoute] string nomineeId, [FromBody] SetNomineeCategoryRequest request, CancellationToken ct)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
-        if (nominee is null) return NotFound();
-
-        if (!string.IsNullOrWhiteSpace(request.CategoryId))
-        {
-            var categoryExists = await _db.AwardCategories
-                .AsNoTracking()
-                .AnyAsync(x => x.Id == request.CategoryId && x.EventId == eventId, ct);
-
-            if (!categoryExists) return BadRequest("Invalid category.");
-        }
-
-        nominee.CategoryId = string.IsNullOrWhiteSpace(request.CategoryId)
-            ? null
-            : request.CategoryId.Trim();
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(ToNomineeDto(nominee));
-    }
-
     [HttpPost("{eventId}/admin/nominations/{nomineeId}/set-category")]
     public async Task<ActionResult<AdminNomineeDto>> AdminSetNominationCategory([FromRoute] string eventId, [FromRoute] string nomineeId, [FromBody] SetNomineeCategoryRequest request, CancellationToken ct)
     {
@@ -666,22 +499,6 @@ public sealed partial class EventsController
         return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
     }
 
-    [HttpPost("{eventId}/admin/nominees/{nomineeId}/approve")]
-    public async Task<ActionResult<NomineeDto>> AdminApproveNominee([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
-        if (nominee is null) return NotFound();
-        if (string.IsNullOrWhiteSpace(nominee.CategoryId))
-            return BadRequest("Nominee must have a category before approval.");
-
-        nominee.Status = ProposalStatus.Approved;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToNomineeDto(nominee));
-    }
-
     [HttpPost("{eventId}/admin/nominations/{nomineeId}/approve")]
     public async Task<ActionResult<AdminNomineeDto>> AdminApproveNomination([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
     {
@@ -696,20 +513,6 @@ public sealed partial class EventsController
         await _db.SaveChangesAsync(ct);
 
         return Ok(await BuildAdminNominationDtoAsync(nominee, ct));
-    }
-
-    [HttpPost("{eventId}/admin/nominees/{nomineeId}/reject")]
-    public async Task<ActionResult<NomineeDto>> AdminRejectNominee([FromRoute] string eventId, [FromRoute] string nomineeId, CancellationToken ct)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        var nominee = await FindNomineeAsync(eventId, nomineeId, ct);
-        if (nominee is null) return NotFound();
-
-        nominee.Status = ProposalStatus.Rejected;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToNomineeDto(nominee));
     }
 
     [HttpPost("{eventId}/admin/nominations/{nomineeId}/reject")]
@@ -758,21 +561,6 @@ public sealed partial class EventsController
         var normalizedStatus = NormalizeNomineeStatusFilter(status);
 
         return Ok(await BuildAdminNominationsPagedDtoAsync(eventId, normalizedStatus, skip, take, ct));
-    }
-
-    [HttpGet("{eventId}/admin/proposals/paged")]
-    public async Task<ActionResult<AdminProposalsPagedDto>> AdminProposalsPaged(
-        [FromRoute] string eventId,
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 50,
-        CancellationToken ct = default)
-    {
-        if (await RequireManageAccessAsync(eventId, ct) is { } error) return error;
-
-        take = Math.Clamp(take, 1, 200);
-        skip = Math.Max(0, skip);
-
-        return Ok(await BuildAdminProposalsPagedDtoAsync(eventId, skip, take, ct));
     }
 
     [HttpGet("{eventId}/admin/members/paged")]

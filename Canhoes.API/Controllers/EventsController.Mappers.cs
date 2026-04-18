@@ -82,41 +82,15 @@ public sealed partial class EventsController
         bool includeLists,
         CancellationToken ct)
     {
+        _ = includeLists;
         var events = await LoadEventSummariesAsync(ct);
         var state = await BuildAdminStateDtoAsync(eventId, ct);
         var counts = await BuildAdminListCountsDtoAsync(eventId, ct);
 
-        if (!includeLists)
-        {
-            return new EventAdminBootstrapDto(
-                events,
-                state,
-                counts
-            );
-        }
-
-        // Sequential execution to avoid DbContext threading issues
-        var categories = await LoadAdminCategoriesAsync(eventId, ct);
-        var members = await LoadAdminMembersAsync(eventId, ct);
-        var secretSanta = await BuildAdminSecretSantaStateDtoAsync(eventId, null, ct);
-        var nominees = await LoadAdminNomineeDtosAsync(eventId, null, ct);
-        var adminNominees = await LoadAdminNominationDtosAsync(eventId, null, ct);
-        var proposals = await BuildAdminProposalsHistoryDtoAsync(eventId, ct);
-        var votes = await BuildAdminVotesDtoAsync(eventId, ct);
-        var officialResults = await BuildAdminOfficialResultsDtoAsync(eventId, ct);
-
         return new EventAdminBootstrapDto(
             events,
             state,
-            counts,
-            categories,
-            nominees,
-            adminNominees,
-            proposals,
-            votes,
-            members,
-            secretSanta,
-            officialResults
+            counts
         );
     }
 
@@ -218,67 +192,6 @@ public sealed partial class EventsController
         return categories.Select(ToAwardCategoryDto).ToList();
     }
 
-    private async Task<List<NomineeDto>> LoadAdminNomineeDtosAsync(
-        string eventId,
-        string? normalizedStatus,
-        CancellationToken ct)
-    {
-        var query = _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId);
-
-        if (normalizedStatus is not null)
-        {
-            query = query.Where(x => x.Status == normalizedStatus);
-        }
-
-        var nominees = await query
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        return nominees.Select(ToNomineeDto).ToList();
-    }
-
-    private async Task<List<AdminNomineeDto>> LoadAdminNominationDtosAsync(
-        string eventId,
-        string? normalizedStatus,
-        CancellationToken ct)
-    {
-        var query = _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId);
-
-        if (normalizedStatus is not null)
-        {
-            query = query.Where(x => x.Status == normalizedStatus);
-        }
-
-        var nominees = await query
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        var submittedByIds = nominees
-            .Select(x => x.SubmittedByUserId)
-            .Distinct()
-            .ToList();
-
-        var usersById = submittedByIds.Count == 0
-            ? new Dictionary<Guid, UserEntity>()
-            : await _db.Users
-                .AsNoTracking()
-                .Where(x => submittedByIds.Contains(x.Id))
-                .ToDictionaryAsync(x => x.Id, ct);
-
-        return nominees.Select(entity =>
-        {
-            var submittedByName = usersById.TryGetValue(entity.SubmittedByUserId, out var user)
-                ? GetUserName(user)
-                : entity.SubmittedByUserId.ToString();
-
-            return ToAdminNomineeDto(entity, submittedByName);
-        }).ToList();
-    }
-
     private async Task<AdminNomineeDto> BuildAdminNominationDtoAsync(
         NomineeEntity entity,
         CancellationToken ct)
@@ -291,251 +204,6 @@ public sealed partial class EventsController
             entity,
             user is null ? entity.SubmittedByUserId.ToString() : GetUserName(user)
         );
-    }
-
-    private async Task<AdminProposalsHistoryDto> BuildAdminProposalsHistoryDtoAsync(
-        string eventId,
-        CancellationToken ct)
-    {
-        var categoryProposals = await _db.CategoryProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        var measureProposals = await _db.MeasureProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        return new AdminProposalsHistoryDto(
-            BuildProposalHistory(
-                categoryProposals.Select(ToCategoryProposalDto).ToList(),
-                proposal => proposal.Status),
-            BuildProposalHistory(
-                measureProposals.Select(ToMeasureProposalDto).ToList(),
-                proposal => proposal.Status)
-        );
-    }
-
-    private async Task<AdminVotesDto> BuildAdminVotesDtoAsync(
-        string eventId,
-        CancellationToken ct)
-    {
-        var categoryIdsTask = _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .Select(x => x.Id)
-            .ToListAsync(ct);
-
-        await categoryIdsTask;
-        var categoryIds = categoryIdsTask.Result;
-
-        if (categoryIds.Count == 0)
-        {
-            return new AdminVotesDto(0, []);
-        }
-
-        // OPTIMIZATION: Limit to most recent 500 votes to prevent memory overload
-        // Use the paginated endpoint ({eventId}/admin/votes/paged) for full access
-        const int maxVotes = 500;
-        var votes = await _db.Votes
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.CategoryId))
-            .OrderByDescending(x => x.UpdatedAtUtc)
-            .Take(maxVotes)
-            .ToListAsync(ct);
-
-        var categories = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, ct);
-
-        if (votes.Count == 0)
-        {
-            return new AdminVotesDto(0, []);
-        }
-
-        // Resolve user names in a single batch
-        var userIds = votes.Select(x => x.UserId).Distinct().ToList();
-        var usersById = await _db.Users
-            .AsNoTracking()
-            .Where(x => userIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, ct);
-
-        var enrichedVotes = votes.Select(vote =>
-        {
-            var categoryName = categories.TryGetValue(vote.CategoryId, out var cat)
-                ? cat.Name
-                : vote.CategoryId;
-
-            var userName = usersById.TryGetValue(vote.UserId, out var user)
-                ? GetUserName(user)
-                : vote.UserId.ToString();
-
-            return new AdminVoteAuditRowDto(
-                vote.CategoryId,
-                categoryName,
-                vote.NomineeId,
-                vote.UserId,
-                userName,
-                new DateTimeOffset(vote.UpdatedAtUtc, TimeSpan.Zero)
-            );
-        }).ToList();
-
-        return new AdminVotesDto(votes.Count, enrichedVotes);
-    }
-
-    private async Task<AdminOfficialResultsDto> BuildAdminOfficialResultsDtoAsync(
-        string eventId,
-        CancellationToken ct)
-    {
-        // Sequential execution to avoid DbContext threading issues
-        var categories = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.Kind == AwardCategoryKind.UserVote)
-            .OrderBy(x => x.SortOrder)
-            .ThenBy(x => x.Name)
-            .ToListAsync(ct);
-
-        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
-
-        var usersById = directory.UsersById;
-        var totalMembers = directory.Members
-            .Select(member => member.UserId)
-            .Distinct()
-            .Count();
-
-        var categoryIds = categories.Select(x => x.Id).ToList();
-        if (categoryIds.Count == 0)
-        {
-            return new AdminOfficialResultsDto(
-                eventId,
-                DateTimeOffset.UtcNow,
-                totalMembers,
-                new List<AdminCategoryResultDto>());
-        }
-
-        // OPTIMIZATION: Project only needed columns instead of full entities
-        var userVotes = await _db.UserVotes
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.CategoryId))
-            .Select(x => new { x.CategoryId, x.VoterUserId, x.TargetUserId })
-            .ToListAsync(ct);
-
-        // Pre-build user name lookup for all user IDs that appear in votes
-        var allUserIds = userVotes
-            .Select(v => v.VoterUserId)
-            .Concat(userVotes.Select(v => v.TargetUserId))
-            .Distinct()
-            .ToList();
-
-        var userNameLookup = new Dictionary<Guid, string>();
-        foreach (var userId in allUserIds)
-        {
-            if (usersById.TryGetValue(userId, out var user))
-            {
-                userNameLookup[userId] = GetUserName(user);
-            }
-            else
-            {
-                userNameLookup[userId] = userId.ToString();
-            }
-        }
-
-        // OPTIMIZATION: Pre-group votes by category for O(1) lookup
-        var votesByCategory = userVotes
-            .GroupBy(v => v.CategoryId)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        var resultCategories = categories.Select(category =>
-        {
-            if (!votesByCategory.TryGetValue(category.Id, out var votesForCategory))
-            {
-                var emptyTotalVotes = 0;
-                var emptyParticipationRate = totalMembers == 0 ? 0d : (double)emptyTotalVotes / totalMembers;
-                return new AdminCategoryResultDto(
-                    category.Id,
-                    category.Name,
-                    emptyTotalVotes,
-                    new List<AdminNomineeVoteTallyDto>(),
-                    emptyParticipationRate);
-            }
-
-            // Group votes by target user (nominee)
-            var votesByNominee = votesForCategory
-                .GroupBy(v => v.TargetUserId)
-                .ToDictionary(g => g.Key, g => g.ToList());
-
-            var nominees = votesByNominee
-                .Select(kvp =>
-                {
-                    var nomineeId = kvp.Key;
-                    var votesForNominee = kvp.Value;
-                    var voteCount = votesForNominee.Count;
-
-                    var nomineeTitle = userNameLookup.TryGetValue(nomineeId, out var name)
-                        ? name
-                        : nomineeId.ToString();
-
-                    var voterUserIds = votesForNominee
-                        .Select(v => v.VoterUserId)
-                        .Select(voterId => userNameLookup.TryGetValue(voterId, out var voterName)
-                            ? voterName
-                            : voterId.ToString())
-                        .Distinct()
-                        .OrderBy(n => n)
-                        .ToList();
-
-                    return new AdminNomineeVoteTallyDto(
-                        nomineeId.ToString(),
-                        nomineeTitle,
-                        null,
-                        voteCount,
-                        voterUserIds
-                    );
-                })
-                .OrderByDescending(n => n.VoteCount)
-                .ThenBy(n => n.NomineeTitle)
-                .ToList();
-
-            var totalVotes = votesForCategory.Count;
-            var participationRate = totalMembers == 0 ? 0d : (double)totalVotes / totalMembers;
-
-            return new AdminCategoryResultDto(
-                category.Id,
-                category.Name,
-                totalVotes,
-                nominees,
-                participationRate
-            );
-        }).ToList();
-
-        return new AdminOfficialResultsDto(
-            eventId,
-            DateTimeOffset.UtcNow,
-            totalMembers,
-            resultCategories
-        );
-    }
-
-    private async Task<List<PublicUserDto>> LoadAdminMembersAsync(
-        string eventId,
-        CancellationToken ct)
-    {
-        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var members = directory.Members;
-        var usersById = directory.UsersById;
-
-        return members
-            .Where(member => usersById.ContainsKey(member.UserId))
-            .OrderByDescending(member => member.Role == EventRoles.Admin)
-            .ThenBy(member => GetUserName(usersById[member.UserId]))
-            .Select(member => ToPublicUserDto(
-                usersById[member.UserId],
-                member.Role == EventRoles.Admin))
-            .ToList();
     }
 
     // ---------- Paginated methods ----------
@@ -614,7 +282,7 @@ public sealed partial class EventsController
             enrichedVotes,
             skip,
             take,
-            skip + take < total
+            skip + enrichedVotes.Count < total
         );
     }
 
@@ -671,49 +339,7 @@ public sealed partial class EventsController
             dtos,
             skip,
             take,
-            skip + take < total
-        );
-    }
-
-    private async Task<AdminProposalsPagedDto> BuildAdminProposalsPagedDtoAsync(
-        string eventId,
-        int skip,
-        int take,
-        CancellationToken ct)
-    {
-        var categoryProposalsTotal = await _db.CategoryProposals
-            .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId, ct);
-
-        var measureProposalsTotal = await _db.MeasureProposals
-            .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId, ct);
-
-        var categoryProposals = await _db.CategoryProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Skip(skip)
-            .Take(take)
-            .ToListAsync(ct);
-
-        var measureProposals = await _db.MeasureProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Skip(skip)
-            .Take(take)
-            .ToListAsync(ct);
-
-        return new AdminProposalsPagedDto(
-            categoryProposalsTotal,
-            BuildProposalHistory(
-                categoryProposals.Select(ToCategoryProposalDto).ToList(),
-                p => p.Status),
-            measureProposalsTotal,
-            BuildProposalHistory(
-                measureProposals.Select(ToMeasureProposalDto).ToList(),
-                p => p.Status)
+            skip + dtos.Count < total
         );
     }
 
@@ -744,7 +370,7 @@ public sealed partial class EventsController
             total,
             skip,
             take,
-            skip + take < total
+            skip + pagedMembers.Count < total
         );
     }
 
@@ -830,7 +456,7 @@ public sealed partial class EventsController
             total,
             skip,
             take,
-            skip + take < total
+            skip + pagedCategories.Count < total
         );
     }
 
@@ -840,20 +466,19 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        var categories = await _db.AwardCategories
+        return await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
+            .Select(c => new AwardCategorySummaryDto(
+                c.Id,
+                c.Name,
+                c.SortOrder,
+                c.IsActive,
+                c.Kind.ToString()
+            ))
             .ToListAsync(ct);
-
-        return categories.Select(c => new AwardCategorySummaryDto(
-            c.Id,
-            c.Name,
-            c.SortOrder,
-            c.IsActive,
-            c.Kind.ToString()
-        )).ToList();
     }
 
     private async Task<List<NomineeSummaryDto>> LoadAdminNomineesSummaryAsync(
@@ -870,16 +495,15 @@ public sealed partial class EventsController
             query = query.Where(x => x.Status == normalizedStatus);
         }
 
-        var nominees = await query
+        return await query
             .OrderByDescending(x => x.CreatedAtUtc)
+            .Select(n => new NomineeSummaryDto(
+                n.Id,
+                n.CategoryId,
+                n.Title,
+                n.Status
+            ))
             .ToListAsync(ct);
-
-        return nominees.Select(n => new NomineeSummaryDto(
-            n.Id,
-            n.CategoryId,
-            n.Title,
-            n.Status
-        )).ToList();
     }
 
     private async Task<List<AdminNomineeSummaryDto>> LoadAdminNominationsSummaryAsync(
@@ -896,37 +520,34 @@ public sealed partial class EventsController
             query = query.Where(x => x.Status == normalizedStatus);
         }
 
-        var nominees = await query
-            .OrderByDescending(x => x.CreatedAtUtc)
+        var nominations = await (
+            from nominee in query
+            join user in _db.Users.AsNoTracking() on nominee.SubmittedByUserId equals user.Id into userGroup
+            from user in userGroup.DefaultIfEmpty()
+            orderby nominee.CreatedAtUtc descending
+            select new
+            {
+                nominee.Id,
+                nominee.CategoryId,
+                nominee.Title,
+                nominee.Status,
+                nominee.SubmittedByUserId,
+                DisplayName = user == null ? null : user.DisplayName,
+                Email = user == null ? null : user.Email
+            })
             .ToListAsync(ct);
 
-        if (nominees.Count == 0) return [];
-
-        var submittedByIds = nominees
-            .Select(x => x.SubmittedByUserId)
-            .Distinct()
+        return nominations.Select(entry => new AdminNomineeSummaryDto(
+                entry.Id,
+                entry.CategoryId,
+                entry.Title,
+                entry.Status,
+                entry.SubmittedByUserId,
+                string.IsNullOrWhiteSpace(entry.DisplayName)
+                    ? entry.Email ?? entry.SubmittedByUserId.ToString()
+                    : entry.DisplayName
+            ))
             .ToList();
-
-        var usersById = await _db.Users
-            .AsNoTracking()
-            .Where(x => submittedByIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, ct);
-
-        return nominees.Select(entity =>
-        {
-            var submittedByName = usersById.TryGetValue(entity.SubmittedByUserId, out var user)
-                ? GetUserName(user)
-                : entity.SubmittedByUserId.ToString();
-
-            return new AdminNomineeSummaryDto(
-                entity.Id,
-                entity.CategoryId,
-                entity.Title,
-                entity.Status,
-                entity.SubmittedByUserId,
-                submittedByName
-            );
-        }).ToList();
     }
 }
 
@@ -1050,18 +671,6 @@ internal static class EventsControllerMappers
             poll
         );
 
-    /// <summary>
-    /// @deprecated Use enriched BuildAdminVotesDtoAsync instead, which resolves
-    /// category and user names. Kept for legacy compatibility only.
-    /// </summary>
-    internal static AdminVoteAuditRowLegacyDto ToAdminVoteAuditRowDto(VoteEntity entity) =>
-        new(
-            entity.CategoryId,
-            entity.NomineeId,
-            entity.UserId,
-            new DateTimeOffset(entity.UpdatedAtUtc, TimeSpan.Zero)
-        );
-
     internal static EventWishlistItemDto ToEventWishlistItemDto(WishlistItemEntity entity) =>
         new(
             entity.Id,
@@ -1083,24 +692,6 @@ internal static class EventsControllerMappers
             entity.Description,
             entity.Status,
             new DateTimeOffset(entity.CreatedAtUtc, TimeSpan.Zero)
-        );
-
-    internal static ProposalsByStatusDto<T> BuildProposalHistory<T>(
-        List<T> items,
-        Func<T, string> statusSelector) =>
-        new(
-            items.Where(item => string.Equals(
-                statusSelector(item),
-                ProposalStatus.Pending,
-                StringComparison.OrdinalIgnoreCase)).ToList(),
-            items.Where(item => string.Equals(
-                statusSelector(item),
-                ProposalStatus.Approved,
-                StringComparison.OrdinalIgnoreCase)).ToList(),
-            items.Where(item => string.Equals(
-                statusSelector(item),
-                ProposalStatus.Rejected,
-                StringComparison.OrdinalIgnoreCase)).ToList()
         );
 
     internal static string GetUserName(UserEntity user) =>

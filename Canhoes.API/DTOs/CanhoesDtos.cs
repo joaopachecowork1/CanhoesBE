@@ -93,30 +93,6 @@ public record CreateMeasureProposalRequest(string Text);
 
 public record UpdateMeasureProposalRequest(string? Text, string? Status);
 
-public record PendingAdminDto(
-    List<NomineeDto> Nominees,
-    List<CategoryProposalDto> CategoryProposals,
-    List<MeasureProposalDto> MeasureProposals
-);
-
-/// <summary>
-/// Keeps proposal history grouped by moderation status so the admin panel can
-/// render both the pending queue and the archive without recomputing buckets.
-/// </summary>
-public record ProposalsByStatusDto<T>(
-    List<T> Pending,
-    List<T> Approved,
-    List<T> Rejected
-);
-
-/// <summary>
-/// Aggregates category and measure proposal history for the active event.
-/// </summary>
-public record AdminProposalsHistoryDto(
-    ProposalsByStatusDto<CategoryProposalDto> CategoryProposals,
-    ProposalsByStatusDto<MeasureProposalDto> MeasureProposals
-);
-
 public record SetNomineeCategoryRequest(string? CategoryId);
 
 public record AdminVoteAuditRowDto(
@@ -126,26 +102,6 @@ public record AdminVoteAuditRowDto(
     Guid UserId,
     string UserName,
     DateTimeOffset UpdatedAtUtc
-);
-
-/// <summary>
-/// Legacy vote audit row — kept for backward compatibility.
-/// Prefer AdminVoteAuditRowDto for new endpoints.
-/// </summary>
-public record AdminVoteAuditRowLegacyDto(
-    string CategoryId,
-    string NomineeId,
-    Guid UserId,
-    DateTimeOffset UpdatedAtUtc
-);
-
-/// <summary>
-/// Minimal vote audit payload used by the admin panel to inspect how many votes
-/// were cast plus the raw rows needed for filtering and drill-down.
-/// </summary>
-public record AdminVotesDto(
-    int Total,
-    List<AdminVoteAuditRowDto> Votes
 );
 
 public record CanhoesResultNomineeDto(
@@ -193,8 +149,7 @@ public record PageRequest(
 );
 
 /// <summary>
-/// Paginated votes audit payload. Replaces the unbounded AdminVotesDto
-/// for large events while keeping backward compatibility.
+/// Canonical paginated vote-audit payload for the admin surface.
 /// </summary>
 public record AdminVotesPagedDto(
     int Total,
@@ -213,16 +168,6 @@ public record AdminNomineesPagedDto(
     int Skip,
     int Take,
     bool HasMore
-);
-
-/// <summary>
-/// Paginated proposals history payload.
-/// </summary>
-public record AdminProposalsPagedDto(
-    int CategoryProposalsTotal,
-    ProposalsByStatusDto<CategoryProposalDto> CategoryProposals,
-    int MeasureProposalsTotal,
-    ProposalsByStatusDto<MeasureProposalDto> MeasureProposals
 );
 
 /// <summary>

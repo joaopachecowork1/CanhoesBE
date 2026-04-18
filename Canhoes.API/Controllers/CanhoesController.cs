@@ -28,12 +28,6 @@ public partial class CanhoesController : ControllerBase
         public bool CanManage => IsAdmin;
     }
 
-    public sealed record AdminProposalsHistoryDto(
-        ProposalsByStatus<CategoryProposalDto> CategoryProposals,
-        ProposalsByStatus<MeasureProposalDto> MeasureProposals);
-
-    public sealed record ProposalsByStatus<T>(IEnumerable<T> Pending, IEnumerable<T> Approved, IEnumerable<T> Rejected);
-
     public CanhoesController(CanhoesDbContext db, IWebHostEnvironment env, IMemoryCache cache)
     {
         _db = db;

@@ -1,34 +1,76 @@
-# Canhoes Backend (DEV skeleton)
+# Canhoes Backend
 
-This is a minimal ASP.NET Core Web API backend to support the frontend right now.
+Backend ASP.NET Core para o módulo Canhões, com surface event-scoped em `api/v1/events`.
 
-## Run (local)
-From `backend/Canhoes.Api`:
+## Run
 
 ```bash
 dotnet restore
-dotnet run
+dotnet build Canhoes.slnx
+dotnet run --project Canhoes.Api
 ```
 
-By default:
-- Swagger: `https://localhost:5001/swagger` (or `http://localhost:5000/swagger`)
-- SQLite file: `canhoes.db` in the API folder
+## Admin contract
 
-## Auth (DEV ONLY)
-The API uses a very simple middleware (`MockAuthMiddleware`) that sets a user id.
-- If `Authorization: Bearer <token>` exists, it assumes the mock user.
-- You can also pass `X-User-Id: <guid>` to simulate different users.
+O contrato canónico do admin é event-scoped e usa bootstrap leve + listas paginadas por secção.
 
-TODO: replace with real JWT auth.
+### Bootstrap
 
-## Endpoints used by the frontend
-- `POST /api/sessions/start`
-- `POST /api/sessions/{id}/stop`
-- `GET /api/sessions`
-- `GET /api/sessions/active`
-- `GET /api/backlog`
+- `GET /v1/events/{eventId}/admin/bootstrap?includeLists=false`
+- Resposta: `events`, `state`, `counts`
+- `includeLists` é aceite por compatibilidade, mas já não activa listas embebidas
 
-## XP rules
-Server is the source of truth.
-Currently: `1 XP per second` (placeholder).
-TODO: decide and update `Models/XpCalculator.cs`.
+### Leitura paginada
+
+- `GET /v1/events/{eventId}/admin/nominations/paged`
+  - shape: `nominations`, `total`, `skip`, `take`, `hasMore`
+- `GET /v1/events/{eventId}/admin/votes/paged`
+  - shape: `votes`, `total`, `skip`, `take`, `hasMore`
+- `GET /v1/events/{eventId}/admin/members/paged`
+  - shape: `items`, `total`, `skip`, `take`, `hasMore`
+- `GET /v1/events/{eventId}/admin/official-results/paged`
+  - shape: `items`, `total`, `skip`, `take`, `hasMore`
+
+### Summaries
+
+- `GET /v1/events/{eventId}/admin/categories/summary`
+- `GET /v1/events/{eventId}/admin/nominees/summary`
+- `GET /v1/events/{eventId}/admin/nominations/summary`
+
+### Moderação
+
+- `GET/PATCH/PUT/DELETE /v1/events/{eventId}/admin/category-proposals...`
+- `GET/PATCH/PUT/DELETE /v1/events/{eventId}/admin/measure-proposals...`
+- `POST /v1/events/{eventId}/admin/nominations/{nomineeId}/approve`
+- `POST /v1/events/{eventId}/admin/nominations/{nomineeId}/reject`
+- `POST /v1/events/{eventId}/admin/nominations/{nomineeId}/set-category`
+
+### Mantidos fora desta limpeza
+
+- `GET/PUT /v1/events/{eventId}/admin/state`
+- `PUT /v1/events/{eventId}/admin/phase`
+- `PUT /v1/events/{eventId}/admin/activate`
+- `PATCH /v1/events/{eventId}/modules`
+- `GET/POST /v1/events/{eventId}/admin/secret-santa/*`
+- `GET/POST/PUT/DELETE /v1/events/{eventId}/admin/categories*`
+
+## Removed legacy surface
+
+Estas rotas deixaram de fazer parte do contrato suportado:
+
+- `/api/canhoes/admin/*`
+- `/v1/events/{eventId}/admin/nominees`
+- `/v1/events/{eventId}/admin/nominees/{nomineeId}/*`
+- `/v1/events/{eventId}/admin/nominations` não paginado
+- `/v1/events/{eventId}/admin/votes`
+- `/v1/events/{eventId}/admin/members`
+- `/v1/events/{eventId}/admin/official-results`
+- `/v1/events/{eventId}/admin/proposals`
+- `/v1/events/{eventId}/admin/proposals/paged`
+
+## Verification
+
+```bash
+dotnet build Canhoes.slnx
+dotnet test Canhoes.Tests/Canhoes.Tests.csproj
+```

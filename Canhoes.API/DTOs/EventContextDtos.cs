@@ -188,33 +188,15 @@ public record AdminCategoryResultDto(
 );
 
 /// <summary>
-/// Official-results snapshot used by the admin audit panel.
-/// </summary>
-public record AdminOfficialResultsDto(
-    string EventId,
-    DateTimeOffset GeneratedAt,
-    int TotalMembers,
-    List<AdminCategoryResultDto> Categories
-);
-
-/// <summary>
-/// Single bootstrap payload for the admin control center. Lists are now
-/// optional — the default response contains only counts so the frontend can
-/// lazy-load each section on demand. Passing includeLists=true returns the
-/// full lists for backward compatibility.
+/// Single bootstrap payload for the admin control center. The response is now
+/// always lightweight: only event identities, state and aggregate counts are
+/// returned. The `includeLists` query parameter is accepted for compatibility
+/// but no longer enables embedded admin lists.
 /// </summary>
 public record EventAdminBootstrapDto(
     List<EventSummaryDto> Events,
     EventAdminStateDto State,
-    AdminListCountsDto Counts,
-    List<AwardCategoryDto>? Categories = null,
-    List<NomineeDto>? Nominees = null,
-    List<AdminNomineeDto>? AdminNominees = null,
-    AdminProposalsHistoryDto? Proposals = null,
-    AdminVotesDto? Votes = null,
-    List<PublicUserDto>? Members = null,
-    EventAdminSecretSantaStateDto? SecretSanta = null,
-    AdminOfficialResultsDto? OfficialResults = null
+    AdminListCountsDto Counts
 );
 
 /// <summary>
