@@ -76,6 +76,37 @@ public sealed class EventModuleAccessTests
         eventBSnapshot.EffectiveModules.Gala.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task AdminMembersPaged_ShouldReturnPagedPublicUsers()
+    {
+        await using var db = CreateDbContext();
+        SeedEvent(db, "event-admin", isActive: true);
+        SeedState(db, "event-admin", EventPhaseTypes.Proposals, BuildVisibility());
+
+        var adminId = Guid.NewGuid();
+        SeedUser(db, adminId, "admin@example.com", "Admin User", isAdmin: true);
+        SeedMember(db, "event-admin", adminId);
+
+        var member1 = Guid.NewGuid();
+        SeedUser(db, member1, "member1@example.com", "Ana Silva");
+        SeedMember(db, "event-admin", member1);
+
+        var member2 = Guid.NewGuid();
+        SeedUser(db, member2, "member2@example.com", "Bruno Costa");
+        SeedMember(db, "event-admin", member2);
+
+        var controller = CreateEventsController(db, adminId, isAdmin: true);
+
+        var result = await controller.AdminMembersPaged("event-admin", skip: 1, take: 1, CancellationToken.None);
+        var page = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<PagedResult<PublicUserDto>>().Subject;
+
+        page.Total.Should().Be(3);
+        page.Skip.Should().Be(1);
+        page.Take.Should().Be(1);
+        page.Items.Should().ContainSingle();
+        page.Items[0].DisplayName.Should().Be("Ana Silva");
+    }
+
     [Theory]
     [InlineData(EventPhaseTypes.Draw, true, true, false, false, false, false, false, false)]
     [InlineData(EventPhaseTypes.Proposals, false, true, true, false, false, true, true, true)]
