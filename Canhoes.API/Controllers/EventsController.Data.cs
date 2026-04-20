@@ -21,6 +21,7 @@ public sealed partial class EventsController
         if (categoryExists) return;
 
         var nextSortOrder = (await _db.AwardCategories
+            .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .MaxAsync(x => (int?)x.SortOrder, ct) ?? 0) + 1;
 
@@ -40,25 +41,25 @@ public sealed partial class EventsController
         string eventId,
         string categoryId,
         CancellationToken ct) =>
-        _db.AwardCategories.FirstOrDefaultAsync(x => x.Id == categoryId && x.EventId == eventId, ct);
+        _db.AwardCategories.AsNoTracking().FirstOrDefaultAsync(x => x.Id == categoryId && x.EventId == eventId, ct);
 
     private Task<CategoryProposalEntity?> FindCategoryProposalAsync(
         string eventId,
         string proposalId,
         CancellationToken ct) =>
-        _db.CategoryProposals.FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+        _db.CategoryProposals.AsNoTracking().FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
 
     private Task<MeasureProposalEntity?> FindMeasureProposalAsync(
         string eventId,
         string proposalId,
         CancellationToken ct) =>
-        _db.MeasureProposals.FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+        _db.MeasureProposals.AsNoTracking().FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
 
     private Task<NomineeEntity?> FindNomineeAsync(
         string eventId,
         string nomineeId,
         CancellationToken ct) =>
-        _db.Nominees.FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
+        _db.Nominees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
 
     private Task<List<EventPhaseEntity>> LoadEventPhasesAsync(
         string eventId,
@@ -241,6 +242,7 @@ SELECT
     {
         var nextSortOrder = sortOrder
             ?? (await _db.AwardCategories
+                .AsNoTracking()
                 .Where(x => x.EventId == eventId)
                 .MaxAsync(x => (int?)x.SortOrder, ct) ?? 0) + 1;
 

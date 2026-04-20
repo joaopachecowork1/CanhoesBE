@@ -226,7 +226,10 @@ public sealed partial class EventsController
         var (access, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (error is not null) return error;
 
-        var events = await _db.Events.ToListAsync(ct);
+        var events = await _db.Events
+            .AsNoTracking()
+            .Select(x => new EventEntity { Id = x.Id, IsActive = x.IsActive })
+            .ToListAsync(ct);
         foreach (var eventEntity in events)
         {
             eventEntity.IsActive = eventEntity.Id == eventId;
@@ -290,13 +293,18 @@ public sealed partial class EventsController
         }
 
         var total = await query.CountAsync(ct);
-        var dtos = (await query
+        var dtos = await query
             .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
             .Skip(skip)
             .Take(take)
-            .ToListAsync(ct))               
-            .Select(ToCategoryProposalDto)   
-            .ToList();
+            .Select(x => new CategoryProposalDto(
+                x.Id,
+                x.Name,
+                x.Description,
+                x.Status,
+                new DateTimeOffset(x.CreatedAtUtc, TimeSpan.Zero)))
+            .ToListAsync(ct);
 
         return new PagedResult<CategoryProposalDto>(dtos, total, skip, take, skip + dtos.Count < total);
     }
@@ -378,13 +386,17 @@ public sealed partial class EventsController
         }
 
         var total = await query.CountAsync(ct);
-        var dtos = (await query
-             .OrderByDescending(x => x.CreatedAtUtc)
-             .Skip(skip)
-             .Take(take)
-             .ToListAsync(ct))
-             .Select(ToMeasureProposalDto)
-             .ToList();
+        var dtos = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip(skip)
+            .Take(take)
+            .Select(x => new MeasureProposalDto(
+                x.Id,
+                x.Text,
+                x.Status,
+                new DateTimeOffset(x.CreatedAtUtc, TimeSpan.Zero)))
+            .ToListAsync(ct);
 
         return new PagedResult<MeasureProposalDto>(dtos, total, skip, take, skip + dtos.Count < total);
     }

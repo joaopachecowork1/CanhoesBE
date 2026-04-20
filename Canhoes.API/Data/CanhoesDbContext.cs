@@ -58,6 +58,10 @@ public class CanhoesDbContext : DbContext
             .HasIndex(x => new { x.EventId, x.UserId })
             .IsUnique();
 
+        modelBuilder.Entity<EventMemberEntity>()
+            .HasIndex(x => new { x.EventId, x.Role })
+            .HasDatabaseName("IX_EventMembers_EventId_Role");
+
         modelBuilder.Entity<EventPhaseEntity>()
             .HasIndex(x => new { x.EventId, x.Type })
             .IsUnique();
@@ -81,13 +85,15 @@ public class CanhoesDbContext : DbContext
             .HasIndex(x => x.Status);
 
         modelBuilder.Entity<CategoryProposalEntity>()
-            .HasIndex(x => new { x.EventId, x.Status });
+            .HasIndex(x => new { x.EventId, x.Status, x.CreatedAtUtc })
+            .HasDatabaseName("IX_CategoryProposals_EventId_Status_CreatedAtUtc");
 
         modelBuilder.Entity<MeasureProposalEntity>()
             .HasIndex(x => x.Status);
 
         modelBuilder.Entity<MeasureProposalEntity>()
-            .HasIndex(x => new { x.EventId, x.Status });
+            .HasIndex(x => new { x.EventId, x.Status, x.CreatedAtUtc })
+            .HasDatabaseName("IX_MeasureProposals_EventId_Status_CreatedAtUtc");
 
         modelBuilder.Entity<VoteEntity>()
             .HasIndex(x => new { x.CategoryId, x.UserId })
@@ -136,7 +142,8 @@ public class CanhoesDbContext : DbContext
                 .HasColumnType("nvarchar(max)")
                 .HasDefaultValue("[]");
 
-            e.HasIndex(x => x.EventId);
+            e.HasIndex(x => new { x.EventId, x.IsPinned, x.CreatedAtUtc })
+                .HasDatabaseName("IX_HubPosts_EventId_IsPinned_CreatedAtUtc");
             e.HasIndex(x => x.CreatedAtUtc);
             e.HasIndex(x => x.IsPinned);
         });
