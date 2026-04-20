@@ -50,7 +50,8 @@ public sealed partial class EventsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<List<EventSummaryDto>>> ListEvents(CancellationToken ct)
     {
-        return Ok(await LoadEventSummariesAsync(ct));
+        var items = await LoadEventSummariesAsync(ct);
+        return Ok(items);
     }
 
     [HttpGet("{eventId}")]
@@ -98,7 +99,6 @@ public sealed partial class EventsController : ControllerBase
     /// Optimized: phases loaded once, counts consolidated, output-cached 15s.
     /// </summary>
     [HttpGet("{eventId}/overview")]
-    [ResponseCache(Duration = 15, Location = Microsoft.AspNetCore.Mvc.ResponseCacheLocation.Any)]
     public async Task<ActionResult<EventOverviewDto>> GetEventOverview(
         [FromRoute] string eventId,
         CancellationToken ct)
@@ -106,24 +106,12 @@ public sealed partial class EventsController : ControllerBase
         var (access, error) = await RequireEventAccessAsync(eventId, ct);
         if (error is not null) return error;
 
-        // Load phases ONCE — reused by both module access and next-phase calculation
         var phases = await LoadEventPhasesAsync(eventId, ct);
-
-        // Pass pre-loaded phases to avoid duplicate query inside EvaluateAsync
-        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(
-            _db,
-            eventId,
-            access.UserId,
-            access.IsAdmin,
-            phases,
-            ct);
-
+        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, access.UserId, access.IsAdmin, phases, ct);
         var activePhaseEntity = moduleAccess.ActivePhase ?? phases.FirstOrDefault(x => x.IsActive);
         var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
         var nextPhase = phases
-            .Where(x => activePhaseEntity is null
-                ? x.EndDateUtc >= DateTime.UtcNow
-                : x.StartDateUtc > activePhaseEntity.StartDateUtc)
+            .Where(x => activePhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activePhaseEntity.StartDateUtc)
             .OrderBy(x => x.StartDateUtc)
             .Select(ToEventPhaseDto)
             .FirstOrDefault();
@@ -131,47 +119,24 @@ public sealed partial class EventsController : ControllerBase
         var activeCategories = await LoadActiveCategoriesAsync(eventId, ct);
         var categoryIds = activeCategories.Select(x => x.Id).ToList();
         var submittedVoteCount = await CountSubmittedVotesAsync(access.UserId, categoryIds, ct);
-
-        // Consolidated counts — replaces 4 individual CountAsync calls
         var counts = await LoadEventCountsAsync(eventId, ct);
-
-        // Per-user counts — still needed individually but lightweight
         var userWishlistCount = await CountWishlistItemsAsync(eventId, access.UserId, ct);
-        var userProposalCount = await _db.CategoryProposals
-            .AsNoTracking()
-            .CountAsync(x => x.EventId == eventId && x.ProposedByUserId == access.UserId, ct);
-
-        var canSubmitProposal = activePhaseEntity?.Type == EventPhaseTypes.Proposals
-            && IsPhaseOpen(activePhaseEntity);
-        var canVote = activePhaseEntity?.Type == EventPhaseTypes.Voting
-            && IsPhaseOpen(activePhaseEntity);
+        var userProposalCount = await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.ProposedByUserId == access.UserId, ct);
+        var canSubmitProposal = activePhaseEntity?.Type == EventPhaseTypes.Proposals && IsPhaseOpen(activePhaseEntity);
+        var canVote = activePhaseEntity?.Type == EventPhaseTypes.Voting && IsPhaseOpen(activePhaseEntity);
 
         return Ok(new EventOverviewDto(
             ToEventSummaryDto(access.Event),
             activePhase,
             nextPhase,
-            new EventPermissionsDto(
-                access.IsAdmin,
-                access.IsMember,
-                access.CanAccess,
-                canSubmitProposal,
-                canVote,
-                access.CanManage
-            ),
-            new EventCountsDto(
-                counts.MemberCount,
-                counts.HubPostCount,
-                activeCategories.Count,
-                counts.PendingCategoryProposalsCount,
-                userWishlistCount
-            ),
+            new EventPermissionsDto(access.IsAdmin, access.IsMember, access.CanAccess, canSubmitProposal, canVote, access.CanManage),
+            new EventCountsDto(counts.MemberCount, counts.HubPostCount, activeCategories.Count, counts.PendingCategoryProposalsCount, userWishlistCount),
             moduleAccess.HasSecretSantaDraw,
             moduleAccess.HasSecretSantaAssignment,
             userWishlistCount,
             userProposalCount,
             submittedVoteCount,
             activeCategories.Count,
-            moduleAccess.EffectiveModules
-        ));
+            moduleAccess.EffectiveModules));
     }
 }

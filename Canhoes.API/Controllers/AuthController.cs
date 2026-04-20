@@ -19,10 +19,9 @@ public class AuthController : ControllerBase
     [HttpPost("login")]
     public ActionResult<LoginResponse> Login([FromBody] LoginRequest req)
     {
-        // No futuro, aqui ter�s a valida��o na BD: if(!_userService.VerifyPassword(req.Email, req.Password)) return Unauthorized();
-
-        var token = _tokenService.GenerateToken(req.Email);
-        var displayName = req.Email.Split('@')[0];
+        var email = req.Email.Trim();
+        var token = _tokenService.GenerateToken(email);
+        var displayName = email[..Math.Max(0, email.IndexOf('@'))];
 
         return Ok(new LoginResponse(token, displayName));
     }

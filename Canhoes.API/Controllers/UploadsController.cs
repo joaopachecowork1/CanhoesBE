@@ -50,6 +50,7 @@ public sealed class UploadsController : ControllerBase
 
         if (System.IO.File.Exists(physicalPath))
         {
+            Response.Headers.CacheControl = "public,max-age=86400,immutable";
             return PhysicalFile(physicalPath, GetContentType(physicalPath));
         }
 

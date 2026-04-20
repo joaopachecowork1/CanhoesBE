@@ -3,7 +3,6 @@ using Canhoes.Api.Caching;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 
 namespace Canhoes.Api.Controllers;
@@ -11,7 +10,6 @@ namespace Canhoes.Api.Controllers;
 public partial class CanhoesController
 {
     [HttpGet("state")]
-    [OutputCache(PolicyName = "EventState", VaryByQueryKeys = new[] { "*" })]
     public async Task<ActionResult<CanhoesEventStateDto>> GetState(CancellationToken ct)
     {
         var (access, error) = await RequireActiveEventAccessAsync(ct);
@@ -22,7 +20,6 @@ public partial class CanhoesController
     }
 
     [HttpGet("categories")]
-    [OutputCache(PolicyName = "Categories", VaryByQueryKeys = new[] { "*" })]
     public async Task<ActionResult<PagedResult<AwardCategoryDto>>> GetCategories(
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,
@@ -37,19 +34,15 @@ public partial class CanhoesController
         // For default page size, use cache; for custom pagination, skip cache
         if (skip == 0 && take == 50)
         {
-            var cacheKey = CacheKeys.ForEvent(CacheKeys.Categories, access.EventId);
-            var allCategories = await _cache.GetOrCreateAsync(
-                cacheKey,
-                CacheKeys.CategoriesTtl,
-                async (token) =>
-                {
-                    var cats = await _db.AwardCategories.AsNoTracking()
-                        .Where(c => c.EventId == access.EventId && c.IsActive)
-                        .OrderBy(c => c.SortOrder)
-                        .ToListAsync(token);
-                    return cats.Select(ToAwardCategoryDto).ToList();
-                },
-                ct);
+            var cacheKey = MemoryCacheKeys.EventAdminCategories(access.EventId);
+            var allCategories = await _cache.GetOrCreateAsync(cacheKey, TimeSpan.FromSeconds(30), async _ =>
+            {
+                var cats = await _db.AwardCategories.AsNoTracking()
+                    .Where(c => c.EventId == access.EventId && c.IsActive)
+                    .OrderBy(c => c.SortOrder)
+                    .ToListAsync(ct);
+                return cats.Select(ToAwardCategoryDto).ToList();
+            });
 
             var total = allCategories.Count;
             var pagedItems = allCategories.Skip(skip).Take(take).ToList();
@@ -120,19 +113,15 @@ public partial class CanhoesController
         // For default page size, use cache
         if (skip == 0 && take == 50)
         {
-            var cacheKey = CacheKeys.ForEvent(CacheKeys.Measures, access.EventId);
-            var allMeasures = await _cache.GetOrCreateAsync(
-                cacheKey,
-                CacheKeys.MeasuresTtl,
-                async (token) =>
-                {
-                    var measures = await _db.Measures.AsNoTracking()
-                        .Where(m => m.EventId == access.EventId && m.IsActive)
-                        .OrderByDescending(m => m.CreatedAtUtc)
-                        .ToListAsync(token);
-                    return measures.Select(ToGalaMeasureDto).ToList();
-                },
-                ct);
+            var cacheKey = MemoryCacheKeys.EventAdminState(access.EventId);
+            var allMeasures = await _cache.GetOrCreateAsync(cacheKey, TimeSpan.FromSeconds(30), async _ =>
+            {
+                var measures = await _db.Measures.AsNoTracking()
+                    .Where(m => m.EventId == access.EventId && m.IsActive)
+                    .OrderByDescending(m => m.CreatedAtUtc)
+                    .ToListAsync(ct);
+                return measures.Select(ToGalaMeasureDto).ToList();
+            });
 
             var total = allMeasures.Count;
             var pagedItems = allMeasures.Skip(skip).Take(take).ToList();

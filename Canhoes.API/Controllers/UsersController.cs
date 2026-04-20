@@ -23,10 +23,12 @@ public sealed class UsersController : ControllerBase
     public async Task<ActionResult<MeDto>> Me(CancellationToken ct)
     {
         var userId = HttpContext.GetUserId();
-        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct);
-        if (user is null) return Unauthorized();
+        var me = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => new MeDto(new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin)))
+            .FirstOrDefaultAsync(ct);
 
-        return new MeDto(new PublicUserDto(user.Id, user.Email, user.DisplayName, user.IsAdmin));
+        return me is null ? Unauthorized() : Ok(me);
     }
 
     [HttpGet("users")]
@@ -62,6 +64,6 @@ public sealed class UsersController : ControllerBase
         user.IsAdmin = isAdmin;
         await _db.SaveChangesAsync(ct);
 
-        return new PublicUserDto(user.Id, user.Email, user.DisplayName, user.IsAdmin);
+        return Ok(new PublicUserDto(user.Id, user.Email, user.DisplayName, user.IsAdmin));
     }
 }
