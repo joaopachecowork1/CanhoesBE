@@ -218,36 +218,41 @@ public sealed partial class HubController
             .Select(x => new { x.PostId, x.UserId, x.OptionId })
             .ToListAsync(ct);
 
-        var myPollVote = userId == Guid.Empty
-            ? new Dictionary<string, string?>()
-            : pollVotes
-                .Where(vote => vote.UserId == userId)
-                .GroupBy(vote => vote.PostId)
-                .ToDictionary(group => group.Key, group => group.Select(vote => vote.OptionId).FirstOrDefault());
+        var optionsByPostId = pollOptions
+            .GroupBy(option => option.PostId)
+            .ToDictionary(group => group.Key, group => group.ToList());
 
-        var pollCounts = pollVotes
-            .GroupBy(vote => vote.OptionId)
-            .ToDictionary(group => group.Key, group => group.Count());
+        var votesByPostId = pollVotes
+            .GroupBy(vote => vote.PostId)
+            .ToDictionary(group => group.Key, group => group.ToList());
 
         return polls.ToDictionary(
             poll => poll.PostId,
             poll =>
             {
-                var options = pollOptions
-                    .Where(option => option.PostId == poll.PostId)
-                    .Select(option => new HubPollOptionDto
+                var postVotes = votesByPostId.TryGetValue(poll.PostId, out var votes)
+                    ? votes
+                    : [];
+                var voteCounts = postVotes
+                    .GroupBy(vote => vote.OptionId)
+                    .ToDictionary(group => group.Key, group => group.Count());
+                var myOptionId = userId == Guid.Empty
+                    ? null
+                    : postVotes.FirstOrDefault(vote => vote.UserId == userId)?.OptionId;
+                var options = optionsByPostId.TryGetValue(poll.PostId, out var options)
+                    ? options.Select(option => new HubPollOptionDto
                     {
                         Id = option.Id,
                         Text = option.Text,
-                        VoteCount = pollCounts.TryGetValue(option.Id, out var count) ? count : 0
-                    })
-                    .ToList();
+                        VoteCount = voteCounts.TryGetValue(option.Id, out var count) ? count : 0
+                    }).ToList()
+                    : [];
 
                 return new HubPollDto
                 {
                     Question = poll.Question,
                     Options = options,
-                    MyOptionId = myPollVote.TryGetValue(poll.PostId, out var optionId) ? optionId : null,
+                    MyOptionId = myOptionId,
                     TotalVotes = options.Sum(option => option.VoteCount)
                 };
             });
@@ -361,6 +366,8 @@ public sealed partial class HubController
             .OrderBy(x => x.CreatedAtUtc)
             .ToListAsync(ct);
 
+        if (comments.Count == 0) return new List<HubCommentDto>();
+
         var commentIds = comments.Select(comment => comment.Id).ToList();
         var reactions = await _db.HubPostCommentReactions
             .AsNoTracking()
@@ -368,7 +375,20 @@ public sealed partial class HubController
             .Select(x => new { x.CommentId, x.UserId, x.Emoji })
             .ToListAsync(ct);
 
+        var reactionsByComment = reactions
+            .GroupBy(reaction => reaction.CommentId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.GroupBy(reaction => reaction.Emoji)
+                    .ToDictionary(emojiGroup => emojiGroup.Key, emojiGroup => emojiGroup.Count()));
+
         var users = await GetDisplayNamesAsync(comments.Select(comment => comment.UserId), ct);
+        var myReactionLookup = userId == Guid.Empty
+            ? new Dictionary<string, List<string>>()
+            : reactions
+                .Where(reaction => reaction.UserId == userId)
+                .GroupBy(reaction => reaction.CommentId)
+                .ToDictionary(group => group.Key, group => group.Select(reaction => reaction.Emoji).Distinct().ToList());
 
         return comments.Select(comment => new HubCommentDto(
             comment.Id,
@@ -377,17 +397,8 @@ public sealed partial class HubController
             users.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
             comment.Text,
             comment.CreatedAtUtc,
-            reactions
-                .Where(reaction => reaction.CommentId == comment.Id)
-                .GroupBy(reaction => reaction.Emoji)
-                .ToDictionary(group => group.Key, group => group.Count()),
-            userId == Guid.Empty
-                ? new List<string>()
-                : reactions
-                    .Where(reaction => reaction.CommentId == comment.Id && reaction.UserId == userId)
-                    .Select(reaction => reaction.Emoji)
-                    .Distinct()
-                    .ToList())).ToList();
+            reactionsByComment.TryGetValue(comment.Id, out var counts) ? counts : new Dictionary<string, int>(),
+            myReactionLookup.TryGetValue(comment.Id, out var myReactions) ? myReactions : new List<string>())).ToList();
     }
 
     private async Task<HubCommentDto> BuildCreatedCommentDtoAsync(

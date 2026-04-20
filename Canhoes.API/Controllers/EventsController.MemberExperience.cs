@@ -966,15 +966,15 @@ public sealed partial class EventsController
         var total = await _db.CategoryProposals
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var proposals = await _db.CategoryProposals
+        var dtos = await _db.CategoryProposals
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.CreatedAtUtc)
             .Skip(skip)
             .Take(take)
+            .Select(ToEventProposalDto)
             .ToListAsync(ct);
 
-        var dtos = proposals.Select(ToEventProposalDto).ToList();
         return new PagedResult<EventProposalDto>(dtos, total, skip, take, (skip + take) < total);
     }
 
@@ -1051,15 +1051,15 @@ public sealed partial class EventsController
         var total = await _db.WishlistItems
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var items = await _db.WishlistItems
+        var dtos = await _db.WishlistItems
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
             .Skip(skip)
             .Take(take)
+            .Select(ToEventWishlistItemDto)
             .ToListAsync(ct);
 
-        var dtos = items.Select(ToEventWishlistItemDto).ToList();
         return new PagedResult<EventWishlistItemDto>(dtos, total, skip, take, (skip + take) < total);
     }
 

@@ -290,13 +290,13 @@ public sealed partial class EventsController
         }
 
         var total = await query.CountAsync(ct);
-        var proposals = await query
+        var dtos = await query
             .OrderByDescending(x => x.CreatedAtUtc)
             .Skip(skip)
             .Take(take)
+            .Select(ToCategoryProposalDto)
             .ToListAsync(ct);
 
-        var dtos = proposals.Select(ToCategoryProposalDto).ToList();
         return new PagedResult<CategoryProposalDto>(dtos, total, skip, take, skip + dtos.Count < total);
     }
 
@@ -377,13 +377,13 @@ public sealed partial class EventsController
         }
 
         var total = await query.CountAsync(ct);
-        var proposals = await query
+        var dtos = await query
             .OrderByDescending(x => x.CreatedAtUtc)
             .Skip(skip)
             .Take(take)
+            .Select(ToMeasureProposalDto)
             .ToListAsync(ct);
 
-        var dtos = proposals.Select(ToMeasureProposalDto).ToList();
         return new PagedResult<MeasureProposalDto>(dtos, total, skip, take, skip + dtos.Count < total);
     }
 
