@@ -239,8 +239,8 @@ public sealed partial class HubController
                 var myOptionId = userId == Guid.Empty
                     ? null
                     : postVotes.FirstOrDefault(vote => vote.UserId == userId)?.OptionId;
-                var options = optionsByPostId.TryGetValue(poll.PostId, out var options)
-                    ? options.Select(option => new HubPollOptionDto
+                var options = optionsByPostId.TryGetValue(poll.PostId, out var pollOptionList)
+                    ? pollOptionList.Select(option => new HubPollOptionDto
                     {
                         Id = option.Id,
                         Text = option.Text,

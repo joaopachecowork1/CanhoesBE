@@ -966,14 +966,15 @@ public sealed partial class EventsController
         var total = await _db.CategoryProposals
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var dtos = await _db.CategoryProposals
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Skip(skip)
-            .Take(take)
-            .Select(ToEventProposalDto)
-            .ToListAsync(ct);
+        var dtos = (await _db.CategoryProposals
+        .AsNoTracking()
+        .Where(x => x.EventId == eventId)
+        .OrderByDescending(x => x.CreatedAtUtc)
+        .Skip(skip)
+        .Take(take)
+        .ToListAsync(ct))
+        .Select(ToEventProposalDto)
+        .ToList();
 
         return new PagedResult<EventProposalDto>(dtos, total, skip, take, (skip + take) < total);
     }
@@ -1051,14 +1052,15 @@ public sealed partial class EventsController
         var total = await _db.WishlistItems
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var dtos = await _db.WishlistItems
+        var dtos = (await _db.WishlistItems
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
             .Skip(skip)
             .Take(take)
+            .ToListAsync(ct))
             .Select(ToEventWishlistItemDto)
-            .ToListAsync(ct);
+            .ToList();
 
         return new PagedResult<EventWishlistItemDto>(dtos, total, skip, take, (skip + take) < total);
     }

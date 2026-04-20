@@ -9,12 +9,13 @@ public sealed partial class EventsController
 {
     private async Task<List<EventSummaryDto>> LoadEventSummariesAsync(CancellationToken ct)
     {
-        return await _db.Events
+        return (await _db.Events
             .AsNoTracking()
             .OrderByDescending(x => x.IsActive)
             .ThenBy(x => x.Name)
+            .ToListAsync(ct))
             .Select(ToEventSummaryDto)
-            .ToListAsync(ct);
+            .ToList();
     }
 
     private async Task<EventAdminStateDto> BuildAdminStateDtoAsync(
