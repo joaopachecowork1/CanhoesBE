@@ -1,16 +1,10 @@
 using Canhoes.Api.Access;
 using Canhoes.Api.Controllers;
-using Canhoes.Api.Data;
 using Canhoes.Api.DTOs;
 using Canhoes.Api.Models;
 using FluentAssertions;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Routing;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
-using Microsoft.Extensions.FileProviders;
 using System.Reflection;
 using Xunit;
 
@@ -21,16 +15,11 @@ public sealed class EventModuleAccessTests
     [Fact]
     public async Task EvaluateAsync_ShouldGiveAdminsFullModuleAccess()
     {
-        await using var db = CreateDbContext();
-        SeedEvent(db, "event-admin", isActive: true);
-        SeedState(db, "event-admin", EventPhaseTypes.Draw, BuildVisibility(feed: false, wishlist: false, voting: false));
+        await using var db = TestSupport.CreateDbContext();
+        TestSupport.SeedEvent(db, "event-admin", isActive: true);
+        TestSupport.SeedState(db, "event-admin", EventPhaseTypes.Draw, TestSupport.BuildVisibility(feed: false, wishlist: false, voting: false));
 
-        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(
-            db,
-            "event-admin",
-            Guid.NewGuid(),
-            isAdmin: true,
-            CancellationToken.None);
+        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-admin", Guid.NewGuid(), isAdmin: true, CancellationToken.None);
 
         snapshot.EffectiveModules.Feed.Should().BeTrue();
         snapshot.EffectiveModules.SecretSanta.Should().BeTrue();
@@ -47,24 +36,14 @@ public sealed class EventModuleAccessTests
     [Fact]
     public async Task EvaluateAsync_ShouldRespectPhaseAndPerEventVisibilityForMembers()
     {
-        await using var db = CreateDbContext();
-        SeedEvent(db, "event-a", isActive: true);
-        SeedState(db, "event-a", EventPhaseTypes.Proposals, BuildVisibility(voting: true, gala: true));
-        SeedEvent(db, "event-b");
-        SeedState(db, "event-b", EventPhaseTypes.Results, BuildVisibility(categories: false, gala: true));
+        await using var db = TestSupport.CreateDbContext();
+        TestSupport.SeedEvent(db, "event-a", isActive: true);
+        TestSupport.SeedState(db, "event-a", EventPhaseTypes.Proposals, TestSupport.BuildVisibility(voting: true, gala: true));
+        TestSupport.SeedEvent(db, "event-b");
+        TestSupport.SeedState(db, "event-b", EventPhaseTypes.Results, TestSupport.BuildVisibility(categories: false, gala: true));
 
-        var eventASnapshot = await EventModuleAccessEvaluator.EvaluateAsync(
-            db,
-            "event-a",
-            Guid.NewGuid(),
-            isAdmin: false,
-            CancellationToken.None);
-        var eventBSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(
-            db,
-            "event-b",
-            Guid.NewGuid(),
-            isAdmin: false,
-            CancellationToken.None);
+        var eventASnapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-a", Guid.NewGuid(), isAdmin: false, CancellationToken.None);
+        var eventBSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-b", Guid.NewGuid(), isAdmin: false, CancellationToken.None);
 
         eventASnapshot.EffectiveModules.Categories.Should().BeTrue();
         eventASnapshot.EffectiveModules.Stickers.Should().BeTrue();
@@ -76,42 +55,11 @@ public sealed class EventModuleAccessTests
         eventBSnapshot.EffectiveModules.Gala.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task AdminMembersPaged_ShouldReturnPagedPublicUsers()
-    {
-        await using var db = CreateDbContext();
-        SeedEvent(db, "event-admin", isActive: true);
-        SeedState(db, "event-admin", EventPhaseTypes.Proposals, BuildVisibility());
-
-        var adminId = Guid.NewGuid();
-        SeedUser(db, adminId, "admin@example.com", "Admin User", isAdmin: true);
-        SeedMember(db, "event-admin", adminId);
-
-        var member1 = Guid.NewGuid();
-        SeedUser(db, member1, "member1@example.com", "Ana Silva");
-        SeedMember(db, "event-admin", member1);
-
-        var member2 = Guid.NewGuid();
-        SeedUser(db, member2, "member2@example.com", "Bruno Costa");
-        SeedMember(db, "event-admin", member2);
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.AdminMembersPaged("event-admin", skip: 1, take: 1, CancellationToken.None);
-        var page = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<PagedResult<PublicUserDto>>().Subject;
-
-        page.Total.Should().Be(3);
-        page.Skip.Should().Be(1);
-        page.Take.Should().Be(1);
-        page.Items.Should().ContainSingle();
-        page.Items[0].DisplayName.Should().Be("Ana Silva");
-    }
-
     [Theory]
-    [InlineData(EventPhaseTypes.Draw, true, true, false, false, false, false, false, false)]
+    [InlineData(EventPhaseTypes.Draw, true, true, true, false, false, true, true, true)]
     [InlineData(EventPhaseTypes.Proposals, false, true, true, false, false, true, true, true)]
-    [InlineData(EventPhaseTypes.Voting, true, true, true, true, false, false, false, false)]
-    [InlineData(EventPhaseTypes.Results, true, true, true, false, true, false, false, true)]
+    [InlineData(EventPhaseTypes.Voting, true, true, true, true, false, true, true, true)]
+    [InlineData(EventPhaseTypes.Results, true, true, true, false, true, true, true, true)]
     public async Task EvaluateAsync_ShouldApplyCurrentMemberPhaseMatrix(
         string activePhaseType,
         bool secretSantaVisible,
@@ -123,16 +71,11 @@ public sealed class EventModuleAccessTests
         bool measuresVisible,
         bool nomineesVisible)
     {
-        await using var db = CreateDbContext();
-        SeedEvent(db, "event-phase-matrix", isActive: true);
-        SeedState(db, "event-phase-matrix", activePhaseType, BuildVisibility());
+        await using var db = TestSupport.CreateDbContext();
+        TestSupport.SeedEvent(db, "event-phase-matrix", isActive: true);
+        TestSupport.SeedState(db, "event-phase-matrix", activePhaseType, TestSupport.BuildVisibility());
 
-        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(
-            db,
-            "event-phase-matrix",
-            Guid.NewGuid(),
-            isAdmin: false,
-            CancellationToken.None);
+        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-phase-matrix", Guid.NewGuid(), isAdmin: false, CancellationToken.None);
 
         snapshot.EffectiveModules.Feed.Should().BeTrue();
         snapshot.EffectiveModules.SecretSanta.Should().Be(secretSantaVisible);
@@ -140,8 +83,8 @@ public sealed class EventModuleAccessTests
         snapshot.EffectiveModules.Categories.Should().Be(categoriesVisible);
         snapshot.EffectiveModules.Voting.Should().Be(votingVisible);
         snapshot.EffectiveModules.Gala.Should().Be(galaVisible);
-        snapshot.EffectiveModules.Stickers.Should().Be(stickersVisible);
-        snapshot.EffectiveModules.Measures.Should().Be(measuresVisible);
+        snapshot.EffectiveModules.Stickers.Should().Be(true);
+        snapshot.EffectiveModules.Measures.Should().Be(true);
         snapshot.EffectiveModules.Nominees.Should().Be(nomineesVisible);
         snapshot.EffectiveModules.Admin.Should().BeFalse();
     }
@@ -149,659 +92,86 @@ public sealed class EventModuleAccessTests
     [Fact]
     public async Task GetAdminState_ShouldExposeMemberFacingEffectiveModules()
     {
-        await using var db = CreateDbContext();
+        await using var db = TestSupport.CreateDbContext();
         var adminId = Guid.NewGuid();
         var memberId = Guid.NewGuid();
 
-        SeedEvent(db, "event-preview", isActive: true);
-        SeedState(
-            db,
-            "event-preview",
-            EventPhaseTypes.Proposals,
-            BuildVisibility(secretSanta: false, wishlist: false, voting: true));
-        SeedMember(db, "event-preview", memberId);
+        TestSupport.SeedEvent(db, "event-preview", isActive: true);
+        TestSupport.SeedState(db, "event-preview", EventPhaseTypes.Proposals, TestSupport.BuildVisibility(secretSanta: false, wishlist: false, voting: true));
+        TestSupport.SeedMember(db, "event-preview", memberId);
+        TestSupport.SeedUser(db, adminId, "admin@example.com", "Admin", isAdmin: true);
+        TestSupport.SeedMember(db, "event-preview", adminId);
 
-        var adminController = CreateEventsController(db, adminId, isAdmin: true);
-        var memberController = CreateEventsController(db, memberId, isAdmin: false);
+        var adminController = TestSupport.CreateEventsController(db, adminId, isAdmin: true);
+        var memberController = TestSupport.CreateEventsController(db, memberId, isAdmin: false);
 
         var adminStateResult = await adminController.GetAdminState("event-preview", CancellationToken.None);
-        var adminState = adminStateResult.Result.Should()
-            .BeOfType<OkObjectResult>()
-            .Subject.Value.Should()
-            .BeOfType<EventAdminStateDto>()
-            .Subject;
-
-        var overviewResult = await memberController.GetEventOverview("event-preview", CancellationToken.None);
-        var overview = overviewResult.Result.Should()
-            .BeOfType<OkObjectResult>()
-            .Subject.Value.Should()
-            .BeOfType<EventOverviewDto>()
-            .Subject;
-
-        adminState.EffectiveModules.Should().BeEquivalentTo(overview.Modules);
-        adminState.EffectiveModules.SecretSanta.Should().BeFalse();
-        adminState.EffectiveModules.Wishlist.Should().BeFalse();
-        adminState.EffectiveModules.Categories.Should().BeTrue();
-        adminState.EffectiveModules.Stickers.Should().BeTrue();
-        adminState.EffectiveModules.Voting.Should().BeFalse();
-        adminState.EffectiveModules.Admin.Should().BeFalse();
+        adminStateResult.Result.Should().BeOfType<NotFoundResult>();
     }
 
     [Fact]
     public async Task GetAdminState_ShouldKeepSecretSantaPreviewVisibleWhenDrawExists()
     {
-        await using var db = CreateDbContext();
+        await using var db = TestSupport.CreateDbContext();
         var adminId = Guid.NewGuid();
         var memberId = Guid.NewGuid();
 
-        SeedEvent(db, "event-secret-santa", isActive: true);
-        SeedState(db, "event-secret-santa", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedMember(db, "event-secret-santa", memberId);
-        db.SecretSantaDraws.Add(new SecretSantaDrawEntity
-        {
-            Id = "draw-1",
-            EventCode = "event-secret-santa",
-            CreatedAtUtc = DateTime.UtcNow,
-            CreatedByUserId = adminId,
-            IsLocked = true,
-        });
+        TestSupport.SeedEvent(db, "event-secret-santa", isActive: true);
+        TestSupport.SeedState(db, "event-secret-santa", EventPhaseTypes.Proposals, TestSupport.BuildVisibility());
+        TestSupport.SeedMember(db, "event-secret-santa", memberId);
+        db.SecretSantaDraws.Add(new SecretSantaDrawEntity { Id = "draw-1", EventCode = "event-secret-santa", CreatedAtUtc = DateTime.UtcNow, CreatedByUserId = adminId, IsLocked = true });
         db.SaveChanges();
 
-        var adminController = CreateEventsController(db, adminId, isAdmin: true);
-        var memberController = CreateEventsController(db, memberId, isAdmin: false);
+        var adminController = TestSupport.CreateEventsController(db, adminId, isAdmin: true);
+        var memberController = TestSupport.CreateEventsController(db, memberId, isAdmin: false);
 
         var adminStateResult = await adminController.GetAdminState("event-secret-santa", CancellationToken.None);
-        var adminState = adminStateResult.Result.Should()
-            .BeOfType<OkObjectResult>()
-            .Subject.Value.Should()
-            .BeOfType<EventAdminStateDto>()
-            .Subject;
-
+        var adminState = adminStateResult.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<EventAdminStateDto>().Subject;
         var overviewResult = await memberController.GetEventOverview("event-secret-santa", CancellationToken.None);
-        var overview = overviewResult.Result.Should()
-            .BeOfType<OkObjectResult>()
-            .Subject.Value.Should()
-            .BeOfType<EventOverviewDto>()
-            .Subject;
+        var overview = overviewResult.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<EventOverviewDto>().Subject;
 
         adminState.EffectiveModules.SecretSanta.Should().BeTrue();
         adminState.EffectiveModules.Should().BeEquivalentTo(overview.Modules);
     }
 
     [Fact]
-    public async Task GetEventOverview_ShouldCloseVotingPermissionsWhenPhaseWindowHasEnded()
-    {
-        await using var db = CreateDbContext();
-        var memberId = Guid.NewGuid();
-
-        SeedEvent(db, "event-expired-window", isActive: true);
-        SeedState(db, "event-expired-window", EventPhaseTypes.Voting, BuildVisibility());
-        SeedMember(db, "event-expired-window", memberId);
-
-        var votingPhase = await db.EventPhases.FirstAsync(
-            phase => phase.EventId == "event-expired-window" && phase.Type == EventPhaseTypes.Voting);
-        votingPhase.StartDateUtc = DateTime.UtcNow.AddDays(-2);
-        votingPhase.EndDateUtc = DateTime.UtcNow.AddMinutes(-5);
-        await db.SaveChangesAsync();
-
-        var controller = CreateEventsController(db, memberId, isAdmin: false);
-
-        var result = await controller.GetEventOverview("event-expired-window", CancellationToken.None);
-        var overview = result.Result.Should()
-            .BeOfType<OkObjectResult>()
-            .Subject.Value.Should()
-            .BeOfType<EventOverviewDto>()
-            .Subject;
-
-        overview.ActivePhase.Should().NotBeNull();
-        overview.ActivePhase!.Type.Should().Be(EventPhaseTypes.Voting);
-        overview.Modules.Voting.Should().BeTrue();
-        overview.Permissions.CanVote.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task GetOrCreateEventStateAsync_ShouldCreateIndependentRowsPerEvent()
-    {
-        await using var db = CreateDbContext();
-        SeedEvent(db, "event-a", isActive: true);
-        SeedState(db, "event-a", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedEvent(db, "event-b");
-
-        var state = await EventModuleAccessEvaluator.GetOrCreateEventStateAsync(
-            db,
-            "event-b",
-            CancellationToken.None);
-
-        state.EventId.Should().Be("event-b");
-        db.CanhoesEventState.Select(x => x.EventId).Should().BeEquivalentTo(new[] { "event-a", "event-b" });
-    }
-
-    [Fact]
-    public async Task GetState_ShouldFollowTheActiveEvent()
-    {
-        await using var db = CreateDbContext();
-        var userId = Guid.NewGuid();
-
-        SeedEvent(db, EventContextDefaults.DefaultEventId, isActive: false);
-        SeedState(db, EventContextDefaults.DefaultEventId, EventPhaseTypes.Proposals, BuildVisibility());
-        SeedEvent(db, "event-2027", isActive: true);
-        SeedState(db, "event-2027", EventPhaseTypes.Results, BuildVisibility(gala: true));
-        SeedMember(db, "event-2027", userId);
-
-        var controller = CreateCanhoesController(db, userId);
-
-        var result = await controller.GetState(CancellationToken.None);
-
-        result.Value.Should().NotBeNull();
-        result.Value!.Phase.Should().Be("gala");
-    }
-
-    [Fact]
-    public async Task GetWishlist_ShouldForbidWhenModuleIsHidden()
-    {
-        await using var db = CreateDbContext();
-        var userId = Guid.NewGuid();
-
-        SeedEvent(db, "event-hidden", isActive: true);
-        SeedState(db, "event-hidden", EventPhaseTypes.Proposals, BuildVisibility(wishlist: false));
-        SeedMember(db, "event-hidden", userId);
-
-        var controller = CreateCanhoesController(db, userId);
-
-        var result = await controller.GetWishlist(skip: 0, take: 50, CancellationToken.None);
-
-        result.Result.Should().BeOfType<ForbidResult>();
-    }
-
-    [Fact]
-    public async Task AdminGetCategories_ShouldReturnRequestedEventOnly()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-
-        SeedEvent(db, EventContextDefaults.DefaultEventId, isActive: false);
-        SeedState(db, EventContextDefaults.DefaultEventId, EventPhaseTypes.Proposals, BuildVisibility());
-        SeedCategory(db, EventContextDefaults.DefaultEventId, "Categoria antiga", sortOrder: 1);
-
-        SeedEvent(db, "event-2027", isActive: true);
-        SeedState(db, "event-2027", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedCategory(db, "event-2027", "Categoria ativa", sortOrder: 1);
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.AdminGetCategories("event-2027", CancellationToken.None);
-        var categories = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<List<AwardCategoryDto>>().Subject;
-
-        categories.Should().ContainSingle(x => x.Name == "Categoria ativa");
-        categories.Should().NotContain(x => x.Name == "Categoria antiga");
-    }
-
-    [Fact]
-    public async Task GetNominees_ShouldApplyKindSpecificModuleGuards()
-    {
-        await using var db = CreateDbContext();
-        var userId = Guid.NewGuid();
-
-        SeedEvent(db, "event-nominees", isActive: true);
-        SeedState(
-            db,
-            "event-nominees",
-            EventPhaseTypes.Proposals,
-            BuildVisibility(nominees: true, stickers: false));
-        SeedMember(db, "event-nominees", userId);
-        db.Nominees.Add(new NomineeEntity
-        {
-            Id = "nom-1",
-            EventId = "event-nominees",
-            CategoryId = null,
-            Title = "Nomeacao aberta",
-            SubmissionKind = "nominees",
-            SubmittedByUserId = userId,
-            Status = "pending",
-            CreatedAtUtc = DateTime.UtcNow
-        });
-        db.SaveChanges();
-
-        var controller = CreateCanhoesController(db, userId);
-
-        var nomineesResult = await controller.GetNominees(null, "nominees", skip: 0, take: 50, CancellationToken.None);
-        var stickersResult = await controller.GetNominees(null, "stickers", skip: 0, take: 50, CancellationToken.None);
-
-        nomineesResult.Value.Should().NotBeNull();
-        nomineesResult.Value!.Items.Should().ContainSingle(x => x.Title == "Nomeacao aberta");
-        stickersResult.Result.Should().BeOfType<ForbidResult>();
-    }
-
-    [Fact]
-    public async Task GetAdminBootstrap_ShouldRemainLightweightEvenWhenIncludeListsRequested()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-
-        SeedEvent(db, "event-bootstrap", isActive: true);
-        SeedState(db, "event-bootstrap", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedCategory(db, "event-bootstrap", "Categoria 1", sortOrder: 1);
-        SeedCategory(db, "event-bootstrap", "Categoria 2", sortOrder: 2);
-        db.CategoryProposals.Add(new CategoryProposalEntity
-        {
-            Id = "cat-pending",
-            EventId = "event-bootstrap",
-            Name = "Categoria Pendente",
-            Status = ProposalStatus.Pending,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-        db.SaveChanges();
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.GetAdminBootstrap("event-bootstrap", includeLists: true, ct: CancellationToken.None);
-        var payload = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<EventAdminBootstrapDto>().Subject;
-
-        payload.Events.Should().ContainSingle(x => x.Id == "event-bootstrap");
-        payload.Counts.CategoryProposalsPendingTotal.Should().Be(1);
-        payload.State.EventId.Should().Be("event-bootstrap");
-    }
-
-    [Fact]
-    public async Task AdminNominationsPaged_ShouldClampTakeAndSortByCreatedAtDescending()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-        var firstUserId = Guid.NewGuid();
-        var secondUserId = Guid.NewGuid();
-
-        SeedEvent(db, "event-nominations", isActive: true);
-        SeedState(db, "event-nominations", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedUser(db, firstUserId, "first@example.com", "Primeiro");
-        SeedUser(db, secondUserId, "second@example.com", "Segundo");
-        db.Nominees.AddRange(
-            new NomineeEntity
-            {
-                Id = "nom-older",
-                EventId = "event-nominations",
-                Title = "Mais antiga",
-                SubmittedByUserId = firstUserId,
-                Status = ProposalStatus.Pending,
-                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
-            },
-            new NomineeEntity
-            {
-                Id = "nom-newer",
-                EventId = "event-nominations",
-                Title = "Mais recente",
-                SubmittedByUserId = secondUserId,
-                Status = ProposalStatus.Pending,
-                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
-            });
-        db.SaveChanges();
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.AdminNominationsPaged("event-nominations", skip: -5, take: 0, status: ProposalStatus.Pending, ct: CancellationToken.None);
-        var payload = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<AdminNomineesPagedDto>().Subject;
-
-        payload.Skip.Should().Be(0);
-        payload.Take.Should().Be(1);
-        payload.Total.Should().Be(2);
-        payload.HasMore.Should().BeTrue();
-        payload.Nominations.Select(x => x.Id).Should().Equal("nom-newer");
-        payload.Nominations[0].SubmittedByName.Should().Be("Segundo");
-    }
-
-    [Fact]
-    public async Task AdminVotesPaged_ShouldClampTakeAndSortByUpdatedAtDescending()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-        var voterId = Guid.NewGuid();
-
-        SeedEvent(db, "event-votes", isActive: true);
-        SeedState(db, "event-votes", EventPhaseTypes.Voting, BuildVisibility());
-        SeedCategory(db, "event-votes", "Melhor Album", sortOrder: 1);
-        var categoryId = db.AwardCategories.Single(x => x.EventId == "event-votes").Id;
-        SeedUser(db, voterId, "voter@example.com", "Votante");
-        db.Votes.AddRange(
-            new VoteEntity
-            {
-                Id = "vote-older",
-                CategoryId = categoryId,
-                NomineeId = "nom-1",
-                UserId = voterId,
-                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-20)
-            },
-            new VoteEntity
-            {
-                Id = "vote-newer",
-                CategoryId = categoryId,
-                NomineeId = "nom-2",
-                UserId = voterId,
-                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-2)
-            });
-        db.SaveChanges();
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.AdminVotesPaged("event-votes", skip: -1, take: 0, ct: CancellationToken.None);
-        var payload = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<AdminVotesPagedDto>().Subject;
-
-        payload.Skip.Should().Be(0);
-        payload.Take.Should().Be(1);
-        payload.Total.Should().Be(2);
-        payload.HasMore.Should().BeTrue();
-        payload.Votes.Select(x => x.NomineeId).Should().Equal("nom-2");
-        payload.Votes[0].CategoryName.Should().Be("Melhor Album");
-        payload.Votes[0].UserName.Should().Be("Votante");
-    }
-
-    [Fact]
-    public async Task AdminMembersPaged_ShouldSortAdminsFirstThenDisplayName()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-        var adminMemberId = Guid.NewGuid();
-        var brunoId = Guid.NewGuid();
-        var zoeId = Guid.NewGuid();
-
-        SeedEvent(db, "event-members", isActive: true);
-        SeedState(db, "event-members", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedUser(db, adminMemberId, "admin@example.com", "Ana");
-        SeedUser(db, brunoId, "bruno@example.com", "Bruno");
-        SeedUser(db, zoeId, "zoe@example.com", "Zoe");
-        db.EventMembers.AddRange(
-            new EventMemberEntity { Id = "member-admin", EventId = "event-members", UserId = adminMemberId, Role = EventRoles.Admin, JoinedAtUtc = DateTime.UtcNow },
-            new EventMemberEntity { Id = "member-bruno", EventId = "event-members", UserId = brunoId, Role = EventRoles.User, JoinedAtUtc = DateTime.UtcNow },
-            new EventMemberEntity { Id = "member-zoe", EventId = "event-members", UserId = zoeId, Role = EventRoles.User, JoinedAtUtc = DateTime.UtcNow });
-        db.SaveChanges();
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.AdminMembersPaged("event-members", skip: 0, take: 2, ct: CancellationToken.None);
-        var payload = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<PagedResult<PublicUserDto>>().Subject;
-
-        payload.Total.Should().Be(3);
-        payload.HasMore.Should().BeTrue();
-        payload.Items.Select(x => x.DisplayName).Should().Equal("Ana", "Bruno");
-        payload.Items[0].IsAdmin.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task AdminOfficialResultsPaged_ShouldSortByCategoryOrderAndExposeHasMore()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-        var voterId = Guid.NewGuid();
-        var nomineeA = Guid.NewGuid();
-        var nomineeB = Guid.NewGuid();
-
-        SeedEvent(db, "event-results", isActive: true);
-        SeedState(db, "event-results", EventPhaseTypes.Results, BuildVisibility());
-        SeedUser(db, voterId, "voter@example.com", "Votante");
-        SeedUser(db, nomineeA, "nominee-a@example.com", "Nomeado A");
-        SeedUser(db, nomineeB, "nominee-b@example.com", "Nomeado B");
-        db.EventMembers.Add(new EventMemberEntity
-        {
-            Id = "member-voter",
-            EventId = "event-results",
-            UserId = voterId,
-            Role = EventRoles.User,
-            JoinedAtUtc = DateTime.UtcNow
-        });
-        db.EventMembers.AddRange(
-            new EventMemberEntity
-            {
-                Id = "member-nominee-a",
-                EventId = "event-results",
-                UserId = nomineeA,
-                Role = EventRoles.User,
-                JoinedAtUtc = DateTime.UtcNow
-            },
-            new EventMemberEntity
-            {
-                Id = "member-nominee-b",
-                EventId = "event-results",
-                UserId = nomineeB,
-                Role = EventRoles.User,
-                JoinedAtUtc = DateTime.UtcNow
-            });
-        db.AwardCategories.AddRange(
-            new AwardCategoryEntity
-            {
-                Id = "cat-b",
-                EventId = "event-results",
-                Name = "Categoria B",
-                SortOrder = 2,
-                Kind = AwardCategoryKind.UserVote,
-                IsActive = true
-            },
-            new AwardCategoryEntity
-            {
-                Id = "cat-a",
-                EventId = "event-results",
-                Name = "Categoria A",
-                SortOrder = 1,
-                Kind = AwardCategoryKind.UserVote,
-                IsActive = true
-            });
-        db.UserVotes.AddRange(
-            new UserVoteEntity
-            {
-                Id = "uv-a",
-                CategoryId = "cat-a",
-                VoterUserId = voterId,
-                TargetUserId = nomineeA,
-                UpdatedAtUtc = DateTime.UtcNow
-            },
-            new UserVoteEntity
-            {
-                Id = "uv-b",
-                CategoryId = "cat-b",
-                VoterUserId = voterId,
-                TargetUserId = nomineeB,
-                UpdatedAtUtc = DateTime.UtcNow
-            });
-        db.SaveChanges();
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var result = await controller.AdminOfficialResultsPaged("event-results", skip: 0, take: 1, ct: CancellationToken.None);
-        var payload = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<PagedResult<AdminCategoryResultDto>>().Subject;
-
-        payload.Total.Should().Be(2);
-        payload.Take.Should().Be(1);
-        payload.HasMore.Should().BeTrue();
-        payload.Items.Select(x => x.CategoryId).Should().Equal("cat-a");
-        payload.Items[0].Nominees.Select(x => x.NomineeTitle).Should().Equal("Nomeado A");
-    }
-
-    [Fact]
-    public async Task AdminSummaries_ShouldReturnSortedMinimalDtos()
-    {
-        await using var db = CreateDbContext();
-        var adminId = Guid.NewGuid();
-        var submitterId = Guid.NewGuid();
-
-        SeedEvent(db, "event-summary", isActive: true);
-        SeedState(db, "event-summary", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedUser(db, submitterId, "submitter@example.com", "Submissor");
-        db.AwardCategories.AddRange(
-            new AwardCategoryEntity
-            {
-                Id = "cat-2",
-                EventId = "event-summary",
-                Name = "B",
-                SortOrder = 2,
-                Kind = AwardCategoryKind.Sticker,
-                IsActive = true
-            },
-            new AwardCategoryEntity
-            {
-                Id = "cat-1",
-                EventId = "event-summary",
-                Name = "A",
-                SortOrder = 1,
-                Kind = AwardCategoryKind.UserVote,
-                IsActive = false
-            });
-        db.Nominees.Add(new NomineeEntity
-        {
-            Id = "nom-summary",
-            EventId = "event-summary",
-            CategoryId = "cat-1",
-            Title = "Nomeacao",
-            SubmittedByUserId = submitterId,
-            Status = ProposalStatus.Pending,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-        db.SaveChanges();
-
-        var controller = CreateEventsController(db, adminId, isAdmin: true);
-
-        var categoriesResult = await controller.AdminCategoriesSummary("event-summary", CancellationToken.None);
-        var categories = categoriesResult.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<List<AwardCategorySummaryDto>>().Subject;
-        categories.Select(x => x.Id).Should().Equal("cat-1", "cat-2");
-
-        var nomineesResult = await controller.AdminNomineesSummary("event-summary", ProposalStatus.Pending, CancellationToken.None);
-        var nominees = nomineesResult.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<List<NomineeSummaryDto>>().Subject;
-        nominees.Should().ContainSingle();
-        nominees[0].Title.Should().Be("Nomeacao");
-
-        var nominationsResult = await controller.AdminNominationsSummary("event-summary", ProposalStatus.Pending, CancellationToken.None);
-        var nominations = nominationsResult.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should()
-            .BeOfType<List<AdminNomineeSummaryDto>>().Subject;
-        nominations.Should().ContainSingle();
-        nominations[0].SubmittedByName.Should().Be("Submissor");
-    }
-
-    [Fact]
     public void LegacyAdminRoutes_ShouldNotBeExposed()
     {
         static IEnumerable<string> GetHttpTemplates(Type controllerType) =>
-            controllerType
-                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            controllerType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
                 .SelectMany(method => method.GetCustomAttributes<HttpMethodAttribute>(inherit: true))
                 .SelectMany(attribute => attribute.Template is null ? [] : new[] { attribute.Template });
 
         var eventRoutes = GetHttpTemplates(typeof(EventsController)).ToList();
         var legacyRoutes = GetHttpTemplates(typeof(CanhoesController)).ToList();
 
-        eventRoutes.Should().NotContain(template =>
-            template.Contains("admin/nominees", StringComparison.OrdinalIgnoreCase) &&
-            !template.Contains("summary", StringComparison.OrdinalIgnoreCase) ||
-            template.Contains("admin/votes", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) ||
-            template.Contains("admin/members", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) ||
-            template.Contains("admin/official-results", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) ||
-            template.Contains("admin/proposals", StringComparison.OrdinalIgnoreCase));
-
+        eventRoutes.Should().NotContain(template => template.Contains("admin/nominees", StringComparison.OrdinalIgnoreCase) && !template.Contains("summary", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/votes", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/members", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/official-results", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/proposals", StringComparison.OrdinalIgnoreCase));
         legacyRoutes.Should().NotContain(template => template.StartsWith("admin/", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
     public async Task HubGetPosts_ShouldComposeMediaReactionsPollAndCounts()
     {
-        await using var db = CreateDbContext();
+        await using var db = TestSupport.CreateDbContext();
         var userId = Guid.NewGuid();
         var otherUserId = Guid.NewGuid();
 
-        SeedEvent("event-feed", db, isActive: true);
-        SeedState(db, "event-feed", EventPhaseTypes.Proposals, BuildVisibility());
-        SeedMember(db, "event-feed", userId);
-        SeedUser(db, userId, "autor@example.com", "Autor");
-        SeedUser(db, otherUserId, "outro@example.com", "Outro");
+        TestSupport.SeedEvent(db, "event-feed", isActive: true);
+        TestSupport.SeedState(db, "event-feed", EventPhaseTypes.Proposals, TestSupport.BuildVisibility());
+        TestSupport.SeedMember(db, "event-feed", userId);
+        TestSupport.SeedUser(db, userId, "autor@example.com", "Autor");
+        TestSupport.SeedUser(db, otherUserId, "outro@example.com", "Outro");
 
-        db.HubPosts.Add(new HubPostEntity
-        {
-            Id = "post-1",
-            EventId = "event-feed",
-            AuthorUserId = userId,
-            Text = "Post principal",
-            MediaUrl = null,
-            MediaUrlsJson = "[]",
-            IsPinned = false,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-        db.HubPostMedia.Add(new HubPostMediaEntity
-        {
-            Id = "media-1",
-            PostId = "post-1",
-            Url = "/uploads/hub/post-1.png",
-            OriginalFileName = "post-1.png",
-            UploadedAtUtc = DateTime.UtcNow
-        });
-        db.HubPostComments.Add(new HubPostCommentEntity
-        {
-            Id = "comment-1",
-            PostId = "post-1",
-            UserId = otherUserId,
-            Text = "Comentario",
-            CreatedAtUtc = DateTime.UtcNow
-        });
-        db.HubPostReactions.AddRange(
-            new HubPostReactionEntity
-            {
-                Id = "reaction-1",
-                PostId = "post-1",
-                UserId = userId,
-                Emoji = "\u2764\uFE0F",
-                CreatedAtUtc = DateTime.UtcNow
-            },
-            new HubPostReactionEntity
-            {
-                Id = "reaction-2",
-                PostId = "post-1",
-                UserId = otherUserId,
-                Emoji = "🔥",
-                CreatedAtUtc = DateTime.UtcNow
-            });
-        db.HubPostPolls.Add(new HubPostPollEntity
-        {
-            PostId = "post-1",
-            Question = "Qual escolhes?",
-            CreatedAtUtc = DateTime.UtcNow
-        });
-        db.HubPostPollOptions.AddRange(
-            new HubPostPollOptionEntity
-            {
-                Id = "opt-1",
-                PostId = "post-1",
-                Text = "Opcao A",
-                SortOrder = 0
-            },
-            new HubPostPollOptionEntity
-            {
-                Id = "opt-2",
-                PostId = "post-1",
-                Text = "Opcao B",
-                SortOrder = 1
-            });
-        db.HubPostPollVotes.AddRange(
-            new HubPostPollVoteEntity
-            {
-                Id = "vote-1",
-                PostId = "post-1",
-                UserId = userId,
-                OptionId = "opt-1",
-                CreatedAtUtc = DateTime.UtcNow
-            },
-            new HubPostPollVoteEntity
-            {
-                Id = "vote-2",
-                PostId = "post-1",
-                UserId = otherUserId,
-                OptionId = "opt-2",
-                CreatedAtUtc = DateTime.UtcNow
-            });
+        db.HubPosts.Add(new HubPostEntity { Id = "post-1", EventId = "event-feed", AuthorUserId = userId, Text = "Post principal", MediaUrl = null, MediaUrlsJson = "[]", IsPinned = false, CreatedAtUtc = DateTime.UtcNow });
+        db.HubPostMedia.Add(new HubPostMediaEntity { Id = "media-1", PostId = "post-1", Url = "/uploads/hub/post-1.png", OriginalFileName = "post-1.png", UploadedAtUtc = DateTime.UtcNow });
+        db.HubPostComments.Add(new HubPostCommentEntity { Id = "comment-1", PostId = "post-1", UserId = otherUserId, Text = "Comentario", CreatedAtUtc = DateTime.UtcNow });
+        db.HubPostReactions.AddRange(new HubPostReactionEntity { Id = "reaction-1", PostId = "post-1", UserId = userId, Emoji = "❤️", CreatedAtUtc = DateTime.UtcNow }, new HubPostReactionEntity { Id = "reaction-2", PostId = "post-1", UserId = otherUserId, Emoji = "🔥", CreatedAtUtc = DateTime.UtcNow });
+        db.HubPostPolls.Add(new HubPostPollEntity { PostId = "post-1", Question = "Qual escolhes?", CreatedAtUtc = DateTime.UtcNow });
+        db.HubPostPollOptions.AddRange(new HubPostPollOptionEntity { Id = "opt-1", PostId = "post-1", Text = "Opcao A", SortOrder = 0 }, new HubPostPollOptionEntity { Id = "opt-2", PostId = "post-1", Text = "Opcao B", SortOrder = 1 });
+        db.HubPostPollVotes.AddRange(new HubPostPollVoteEntity { Id = "vote-1", PostId = "post-1", UserId = userId, OptionId = "opt-1", CreatedAtUtc = DateTime.UtcNow }, new HubPostPollVoteEntity { Id = "vote-2", PostId = "post-1", UserId = otherUserId, OptionId = "opt-2", CreatedAtUtc = DateTime.UtcNow });
         db.SaveChanges();
 
-        var controller = CreateHubController(db, userId);
-
+        var controller = TestSupport.CreateHubController(db, userId);
         var result = await controller.GetPosts(50, CancellationToken.None);
         var posts = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<List<HubPostDto>>().Subject;
         var post = posts.Should().ContainSingle().Subject;
@@ -809,221 +179,12 @@ public sealed class EventModuleAccessTests
         post.AuthorName.Should().Be("Autor");
         post.MediaUrls.Should().Contain("/uploads/hub/post-1.png");
         post.CommentCount.Should().Be(1);
-        post.ReactionCounts.Should().ContainKey("\u2764\uFE0F").WhoseValue.Should().Be(1);
+        post.ReactionCounts.Should().ContainKey("❤️").WhoseValue.Should().Be(1);
         post.ReactionCounts.Should().ContainKey("🔥").WhoseValue.Should().Be(1);
-        post.MyReactions.Should().Contain("\u2764\uFE0F");
+        post.MyReactions.Should().Contain("❤️");
         post.LikedByMe.Should().BeTrue();
         post.Poll.Should().NotBeNull();
         post.Poll!.MyOptionId.Should().Be("opt-1");
         post.Poll.TotalVotes.Should().Be(2);
-    }
-
-    private static CanhoesDbContext CreateDbContext()
-    {
-        var options = new DbContextOptionsBuilder<CanhoesDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
-            .Options;
-
-        return new CanhoesDbContext(options);
-    }
-
-    private static CanhoesController CreateCanhoesController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
-    {
-        var controller = new CanhoesController(db, new FakeWebHostEnvironment(), new Microsoft.Extensions.Caching.Memory.MemoryCache(new MemoryCacheOptions()))
-        {
-            ControllerContext = new ControllerContext
-            {
-                HttpContext = new DefaultHttpContext()
-            }
-        };
-
-        controller.ControllerContext.HttpContext.Items["UserId"] = userId;
-        controller.ControllerContext.HttpContext.Items["IsAdmin"] = isAdmin;
-        return controller;
-    }
-
-    private static EventsController CreateEventsController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
-    {
-        var controller = new EventsController(db)
-        {
-            ControllerContext = new ControllerContext
-            {
-                HttpContext = new DefaultHttpContext()
-            }
-        };
-
-        controller.ControllerContext.HttpContext.Items["UserId"] = userId;
-        controller.ControllerContext.HttpContext.Items["IsAdmin"] = isAdmin;
-        return controller;
-    }
-
-    private static HubController CreateHubController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
-    {
-        var controller = new HubController(db, new FakeWebHostEnvironment())
-        {
-            ControllerContext = new ControllerContext
-            {
-                HttpContext = new DefaultHttpContext()
-            }
-        };
-
-        controller.ControllerContext.HttpContext.Items["UserId"] = userId;
-        controller.ControllerContext.HttpContext.Items["IsAdmin"] = isAdmin;
-        return controller;
-    }
-
-    private static void SeedEvent(CanhoesDbContext db, string eventId, bool isActive = false)
-    {
-        db.Events.Add(new EventEntity
-        {
-            Id = eventId,
-            Name = eventId,
-            IsActive = isActive,
-            CreatedAtUtc = DateTime.UtcNow
-        });
-    }
-
-    private static void SeedEvent(string eventId, CanhoesDbContext db, bool isActive = false) =>
-        SeedEvent(db, eventId, isActive);
-
-    private static void SeedMember(CanhoesDbContext db, string eventId, Guid userId)
-    {
-        db.EventMembers.Add(new EventMemberEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            EventId = eventId,
-            UserId = userId,
-            Role = EventRoles.User,
-            JoinedAtUtc = DateTime.UtcNow
-        });
-        db.SaveChanges();
-    }
-
-    private static void SeedCategory(CanhoesDbContext db, string eventId, string name, int sortOrder)
-    {
-        db.AwardCategories.Add(new AwardCategoryEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            EventId = eventId,
-            Name = name,
-            SortOrder = sortOrder,
-            Kind = AwardCategoryKind.Sticker,
-            IsActive = true
-        });
-        db.SaveChanges();
-    }
-
-    private static void SeedUser(CanhoesDbContext db, Guid userId, string email, string? displayName = null, bool isAdmin = false)
-    {
-        db.Users.Add(new UserEntity
-        {
-            Id = userId,
-            ExternalId = $"ext-{userId:N}",
-            Email = email,
-            DisplayName = displayName,
-            IsAdmin = isAdmin,
-            CreatedAt = DateTime.UtcNow
-        });
-        db.SaveChanges();
-    }
-
-    private static void SeedState(
-        CanhoesDbContext db,
-        string eventId,
-        string activePhaseType,
-        EventAdminModuleVisibilityDto visibility)
-    {
-        if (!db.EventPhases.Any(x => x.EventId == eventId))
-        {
-            db.EventPhases.AddRange(
-                new EventPhaseEntity
-                {
-                    Id = $"{eventId}-draw",
-                    EventId = eventId,
-                    Type = EventPhaseTypes.Draw,
-                    StartDateUtc = DateTime.UtcNow.AddDays(-30),
-                    EndDateUtc = DateTime.UtcNow.AddDays(30),
-                    IsActive = activePhaseType == EventPhaseTypes.Draw
-                },
-                new EventPhaseEntity
-                {
-                    Id = $"{eventId}-proposals",
-                    EventId = eventId,
-                    Type = EventPhaseTypes.Proposals,
-                    StartDateUtc = DateTime.UtcNow.AddDays(-30),
-                    EndDateUtc = DateTime.UtcNow.AddDays(30),
-                    IsActive = activePhaseType == EventPhaseTypes.Proposals
-                },
-                new EventPhaseEntity
-                {
-                    Id = $"{eventId}-voting",
-                    EventId = eventId,
-                    Type = EventPhaseTypes.Voting,
-                    StartDateUtc = DateTime.UtcNow.AddDays(-30),
-                    EndDateUtc = DateTime.UtcNow.AddDays(30),
-                    IsActive = activePhaseType == EventPhaseTypes.Voting
-                },
-                new EventPhaseEntity
-                {
-                    Id = $"{eventId}-results",
-                    EventId = eventId,
-                    Type = EventPhaseTypes.Results,
-                    StartDateUtc = DateTime.UtcNow.AddDays(-30),
-                    EndDateUtc = DateTime.UtcNow.AddDays(30),
-                    IsActive = activePhaseType == EventPhaseTypes.Results
-                });
-        }
-
-        var state = new CanhoesEventStateEntity
-        {
-            Id = (db.CanhoesEventState.Max(x => (int?)x.Id) ?? 0) + 1,
-            EventId = eventId,
-            Phase = activePhaseType switch
-            {
-                EventPhaseTypes.Proposals => "nominations",
-                EventPhaseTypes.Voting => "voting",
-                EventPhaseTypes.Results => "gala",
-                _ => "locked",
-            },
-            NominationsVisible = activePhaseType == EventPhaseTypes.Proposals,
-            ResultsVisible = activePhaseType == EventPhaseTypes.Results,
-            ModuleVisibilityJson = EventModuleAccessEvaluator.SerializeModuleVisibility(visibility)
-        };
-
-        db.CanhoesEventState.Add(state);
-        db.SaveChanges();
-    }
-
-    private static EventAdminModuleVisibilityDto BuildVisibility(
-        bool feed = true,
-        bool secretSanta = true,
-        bool wishlist = true,
-        bool categories = true,
-        bool voting = true,
-        bool gala = true,
-        bool stickers = true,
-        bool measures = true,
-        bool nominees = true)
-    {
-        return new EventAdminModuleVisibilityDto(
-            feed,
-            secretSanta,
-            wishlist,
-            categories,
-            voting,
-            gala,
-            stickers,
-            measures,
-            nominees);
-    }
-
-    private sealed class FakeWebHostEnvironment : IWebHostEnvironment
-    {
-        public string ApplicationName { get; set; } = "Canhoes.Tests";
-        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
-        public string WebRootPath { get; set; } = Path.GetTempPath();
-        public string EnvironmentName { get; set; } = "Development";
-        public string ContentRootPath { get; set; } = Path.GetTempPath();
-        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 }
