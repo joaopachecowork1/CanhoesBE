@@ -19,11 +19,34 @@ public sealed partial class EventsController
 
         if (activeEvent is null) return NotFound();
 
-        var overview = await GetEventOverview(activeEvent.Id, ct);
-        if (overview.Result is not OkObjectResult ok || ok.Value is not EventOverviewDto overviewDto)
-        {
-            return overview.Result ?? NotFound();
-        }
+        var (access, error) = await RequireEventAccessAsync(activeEvent.Id, ct);
+        if (error is not null) return error;
+
+        var phases = await LoadEventPhasesAsync(activeEvent.Id, ct);
+        var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
+        var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
+        var nextPhase = phases
+            .Where(x => activePhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activePhaseEntity.StartDateUtc)
+            .OrderBy(x => x.StartDateUtc)
+            .Select(ToEventPhaseDto)
+            .FirstOrDefault();
+
+        var overviewDto = new EventOverviewDto(
+            ToEventSummaryDto(activeEvent),
+            activePhase,
+            nextPhase,
+            new EventPermissionsDto(access.IsAdmin, access.IsMember, access.CanAccess, false, false, access.CanManage),
+            new EventCountsDto(0, 0, 0, 0, 0),
+            false,
+            false,
+            0,
+            0,
+            0,
+            0,
+            access.IsAdmin
+                ? new EventModulesDto(true, true, true, true, true, true, true, true, true, true)
+                : new EventModulesDto(true, false, true, false, false, false, false, false, false, false)
+        );
 
         return Ok(new EventActiveContextDto(ToEventSummaryDto(activeEvent), overviewDto));
     }

@@ -229,9 +229,6 @@ app.UseMiddleware<PerformanceLoggingMiddleware>();
 // Performance metrics – tracks request durations in memory for /admin/perf endpoint.
 app.UseMiddleware<PerformanceMetricsMiddleware>();
 
-// Output caching – serves cached responses without hitting controllers
-app.UseOutputCache();
-
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -247,6 +244,9 @@ app.UseAuthorization();
 
 // Map authenticated Google user to local DB user (first user becomes admin)
 app.UseMiddleware<UserContextMiddleware>();
+
+// Output caching only after auth/user context is established
+app.UseOutputCache();
 
 app.MapGet("/health", async ([FromServices] Canhoes.Api.Data.CanhoesDbContext db, CancellationToken ct) =>
 {
