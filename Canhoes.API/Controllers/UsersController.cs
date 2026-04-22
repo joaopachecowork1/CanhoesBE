@@ -23,6 +23,11 @@ public sealed class UsersController : ControllerBase
     [HttpGet("me")]
     public async Task<ActionResult<MeDto>> Me(CancellationToken ct)
     {
+        if (HttpContext.Items.TryGetValue("CurrentUser", out var currentUser) && currentUser is PublicUserDto cachedUser)
+        {
+            return Ok(new MeDto(cachedUser));
+        }
+
         var user = await ResolveCurrentUserAsync(HttpContext.User, ct);
         return user is null ? Unauthorized() : Ok(new MeDto(user));
     }

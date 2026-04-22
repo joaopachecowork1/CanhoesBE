@@ -2,6 +2,7 @@ using System.Linq;
 using System;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
 using Microsoft.Extensions.Logging;
@@ -23,21 +24,18 @@ public sealed class UserContextMiddleware
     private readonly RequestDelegate _next;
     private readonly ILogger<UserContextMiddleware> _logger;
     private readonly IConfiguration _config;
+    private readonly IMemoryCache _cache;
 
-    public UserContextMiddleware(RequestDelegate next, ILogger<UserContextMiddleware> logger, IConfiguration config)
+    public UserContextMiddleware(RequestDelegate next, ILogger<UserContextMiddleware> logger, IConfiguration config, IMemoryCache cache)
     {
         _next = next;
         _logger = logger;
         _config = config;
+        _cache = cache;
     }
 
     public async Task Invoke(HttpContext ctx, CanhoesDbContext _db)
     {
-        if (ctx.Request.Path.Value?.Equals("/api/me", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            await _next(ctx);
-            return;
-        }
 
         var isMockAuth = ctx.Items.TryGetValue("MockAuthEmail", out var mockEmailObj)
             && mockEmailObj is string mockEmail;
@@ -70,6 +68,14 @@ public sealed class UserContextMiddleware
 
             if (!string.IsNullOrWhiteSpace(sub) && !string.IsNullOrWhiteSpace(email))
             {
+                var cacheKey = $"user-context:{sub}:{email}";
+                if (_cache.TryGetValue(cacheKey, out UserContextSnapshot? cached) && cached is not null)
+                {
+                    ApplyContext(ctx, cached);
+                    await _next(ctx);
+                    return;
+                }
+
                 // Procura por ExternalId (mais correto) ou Email como fallback
                 var user = await _db.Users.FirstOrDefaultAsync(u => u.ExternalId == sub || u.Email == email, ctx.RequestAborted);
 
@@ -103,14 +109,8 @@ public sealed class UserContextMiddleware
                         user.IsAdmin = true;
                         await _db.SaveChangesAsync(ctx.RequestAborted);
                     }
-
-                    ctx.Items["IsAdmin"] = user.IsAdmin;
                 }
 
-                ctx.Items["UserId"] = user.Id;
-                ctx.Items["IsAdmin"] = user.IsAdmin;
-
-                // Apply optional admin allowlist (email) from config
                 try
                 {
                     var adminEmails = _config.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
@@ -122,8 +122,6 @@ public sealed class UserContextMiddleware
                             user.IsAdmin = true;
                             await _db.SaveChangesAsync(ctx.RequestAborted);
                         }
-
-                        ctx.Items["IsAdmin"] = true;
                     }
                 }
                 catch (Exception ex)
@@ -131,13 +129,36 @@ public sealed class UserContextMiddleware
                     _logger.LogWarning(ex, "Failed to apply AdminEmails allowlist.");
                 }
 
-                _logger.LogDebug("Mapped token -> user: sub={Sub} email={Email} userId={UserId} isAdmin={IsAdmin}", sub, email, user.Id, user.IsAdmin);
+                var snapshot = new UserContextSnapshot(
+                    new PublicUserDto(user.Id, user.Email, user.DisplayName, user.IsAdmin),
+                    user.Id,
+                    user.IsAdmin);
 
+                _cache.Set(
+                    cacheKey,
+                    snapshot,
+                    new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                        SlidingExpiration = TimeSpan.FromMinutes(1)
+                    });
+
+                ApplyContext(ctx, snapshot);
+                _logger.LogDebug("Mapped token -> user: sub={Sub} email={Email} userId={UserId} isAdmin={IsAdmin}", sub, email, user.Id, user.IsAdmin);
             }
         }
 
         await _next(ctx);
     }
+
+    private static void ApplyContext(HttpContext ctx, UserContextSnapshot snapshot)
+    {
+        ctx.Items["CurrentUser"] = snapshot.User;
+        ctx.Items["UserId"] = snapshot.UserId;
+        ctx.Items["IsAdmin"] = snapshot.IsAdmin;
+    }
+
+    private sealed record UserContextSnapshot(PublicUserDto User, Guid UserId, bool IsAdmin);
 }
 
 public static class HttpContextUserExtensions
