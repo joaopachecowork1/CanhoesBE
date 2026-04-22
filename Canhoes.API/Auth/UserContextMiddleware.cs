@@ -1,6 +1,6 @@
 using System.Linq;
 using System;
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
@@ -33,6 +33,12 @@ public sealed class UserContextMiddleware
 
     public async Task Invoke(HttpContext ctx, CanhoesDbContext _db)
     {
+        if (ctx.Request.Path.Value?.Equals("/api/me", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await _next(ctx);
+            return;
+        }
+
         var isMockAuth = ctx.Items.TryGetValue("MockAuthEmail", out var mockEmailObj)
             && mockEmailObj is string mockEmail;
 
@@ -65,7 +71,7 @@ public sealed class UserContextMiddleware
             if (!string.IsNullOrWhiteSpace(sub) && !string.IsNullOrWhiteSpace(email))
             {
                 // Procura por ExternalId (mais correto) ou Email como fallback
-                var user = await _db.Users.FirstOrDefaultAsync(u => u.ExternalId == sub || u.Email == email);
+                var user = await _db.Users.FirstOrDefaultAsync(u => u.ExternalId == sub || u.Email == email, ctx.RequestAborted);
 
                 if (user == null)
                 {
@@ -79,11 +85,11 @@ public sealed class UserContextMiddleware
                         Email = email,
                         DisplayName = name,
                         ExternalId = sub,
-                        IsAdmin = isAdminFromMock || !await _db.Users.AnyAsync(),
+                        IsAdmin = isAdminFromMock || !await _db.Users.AnyAsync(ctx.RequestAborted),
                         CreatedAt = DateTime.UtcNow
                     };
                     _db.Users.Add(user);
-                    await _db.SaveChangesAsync();
+                    await _db.SaveChangesAsync(ctx.RequestAborted);
                 }
 
                 // If mock auth and user is in admin list, ensure IsAdmin flag
@@ -95,7 +101,7 @@ public sealed class UserContextMiddleware
                     if (isAdminFromMock && !user.IsAdmin)
                     {
                         user.IsAdmin = true;
-                        await _db.SaveChangesAsync();
+                        await _db.SaveChangesAsync(ctx.RequestAborted);
                     }
 
                     ctx.Items["IsAdmin"] = user.IsAdmin;
@@ -114,7 +120,7 @@ public sealed class UserContextMiddleware
                         if (!user.IsAdmin)
                         {
                             user.IsAdmin = true;
-                            await _db.SaveChangesAsync();
+                            await _db.SaveChangesAsync(ctx.RequestAborted);
                         }
 
                         ctx.Items["IsAdmin"] = true;
