@@ -69,8 +69,15 @@ public class CanhoesDbContext : DbContext
         modelBuilder.Entity<EventPhaseEntity>()
             .HasIndex(x => new { x.EventId, x.IsActive });
 
+        modelBuilder.Entity<EventPhaseEntity>()
+            .HasIndex(x => new { x.EventId, x.StartDateUtc });
+
         modelBuilder.Entity<AwardCategoryEntity>()
             .HasKey(x => x.Id);
+
+        modelBuilder.Entity<AwardCategoryEntity>()
+            .Property(x => x.VoteRules)
+            .HasColumnType("jsonb");
 
         modelBuilder.Entity<AwardCategoryEntity>()
             .HasIndex(x => new { x.EventId, x.SortOrder });
@@ -116,7 +123,7 @@ public class CanhoesDbContext : DbContext
 
         modelBuilder.Entity<CanhoesEventStateEntity>()
             .Property(x => x.ModuleVisibilityJson)
-            .HasColumnType("nvarchar(max)")
+            .HasColumnType("jsonb")
             .HasDefaultValue("{}");
 
         // Hub poll: user can only have one vote per post.
@@ -139,8 +146,8 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.Text).HasMaxLength(4000);
             e.Property(x => x.MediaUrl).HasMaxLength(1024);
             e.Property(x => x.MediaUrlsJson)
-                .HasColumnType("nvarchar(max)")
-                .HasDefaultValue("[]");
+                    .HasColumnType("jsonb")
+                    .HasDefaultValue("[]");
 
             e.HasIndex(x => new { x.EventId, x.IsPinned, x.CreatedAtUtc })
                 .HasDatabaseName("IX_HubPosts_EventId_IsPinned_CreatedAtUtc");
@@ -155,6 +162,8 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.PostId).HasMaxLength(64);
             e.Property(x => x.Text).HasMaxLength(2000);
             e.HasIndex(x => x.PostId);
+            e.HasIndex(x => new { x.PostId, x.CreatedAtUtc });
+            e.HasIndex(x => x.UserId);
         });
 
         modelBuilder.Entity<HubPostLikeEntity>(e =>
@@ -164,6 +173,7 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.PostId).HasMaxLength(64);
             e.HasIndex(x => new { x.PostId, x.UserId }).IsUnique();
             e.HasIndex(x => x.PostId);
+            e.HasIndex(x => x.UserId);
         });
 
         modelBuilder.Entity<HubPostDownvoteEntity>(e =>
@@ -173,6 +183,7 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.PostId).HasMaxLength(64);
             e.HasIndex(x => new { x.PostId, x.UserId }).IsUnique();
             e.HasIndex(x => x.PostId);
+            e.HasIndex(x => x.UserId);
         });
 
         modelBuilder.Entity<HubPostReactionEntity>(e =>
@@ -183,6 +194,7 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.Emoji).HasMaxLength(16);
             e.HasIndex(x => new { x.PostId, x.UserId, x.Emoji }).IsUnique();
             e.HasIndex(x => x.PostId);
+            e.HasIndex(x => x.UserId);
         });
 
         modelBuilder.Entity<HubPostCommentReactionEntity>(e =>
@@ -193,6 +205,7 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.Emoji).HasMaxLength(16);
             e.HasIndex(x => new { x.CommentId, x.UserId, x.Emoji }).IsUnique();
             e.HasIndex(x => x.CommentId);
+            e.HasIndex(x => x.UserId);
         });
 
         modelBuilder.Entity<HubPostMediaEntity>(e =>
@@ -205,6 +218,8 @@ public class CanhoesDbContext : DbContext
             e.Property(x => x.ContentType).HasMaxLength(128);
             e.HasIndex(x => x.PostId);
             e.HasIndex(x => x.Url).IsUnique();
+            e.HasIndex(x => x.UploadedAtUtc);
+            e.HasIndex(x => x.UploadedByUserId);
         });
 
         // -----------------

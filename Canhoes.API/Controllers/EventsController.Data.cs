@@ -1,6 +1,5 @@
 using Canhoes.Api.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Data.SqlClient;
 
 namespace Canhoes.Api.Controllers;
 
@@ -71,74 +70,13 @@ public sealed partial class EventsController
             .ToListAsync(ct);
 
     /// <summary>
-    /// Consolidated counts query — single round-trip to the database using
-    /// scalar sub-queries instead of 4 separate CountAsync calls.
+    /// Consolidated counts query using an optimized fallback approach for cross-platform compatibility.
     /// </summary>
     private async Task<EventCountsAggregate> LoadEventCountsAsync(
         string eventId,
         CancellationToken ct)
     {
-        if (_db.Database.IsSqlServer())
-        {
-            return await LoadEventCountsSqlAsync(eventId, ct);
-        }
-
-        // Fallback for non-SQL Server (SQLite in tests)
         return await LoadEventCountsFallbackAsync(eventId, ct);
-    }
-
-    private async Task<EventCountsAggregate> LoadEventCountsSqlAsync(
-        string eventId,
-        CancellationToken ct)
-    {
-        var sql = @"
-SELECT
-    (SELECT COUNT(*) FROM EventMembers WHERE EventId = @p0) AS MemberCount,
-    (SELECT COUNT(*) FROM HubPosts WHERE EventId = @p0) AS HubPostCount,
-    (SELECT COUNT(*) FROM CategoryProposals WHERE EventId = @p0 AND Status = @p1) AS PendingProposals,
-    (SELECT COUNT(*) FROM WishlistItems WHERE EventId = @p0) AS WishlistCount;";
-
-        await using var cmd = _db.Database.GetDbConnection().CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.Add(CreateParameter(cmd, "@p0", eventId));
-        cmd.Parameters.Add(CreateParameter(cmd, "@p1", ProposalStatus.Pending));
-
-        var wasOpen = cmd.Connection!.State == System.Data.ConnectionState.Open;
-        if (!wasOpen)
-        {
-            await cmd.Connection.OpenAsync(ct);
-        }
-
-        try
-        {
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            if (await reader.ReadAsync(ct))
-            {
-                return new EventCountsAggregate(
-                    reader.GetInt32(0),
-                    reader.GetInt32(1),
-                    reader.GetInt32(2),
-                    reader.GetInt32(3));
-            }
-        }
-        finally
-        {
-            if (!wasOpen)
-            {
-                await cmd.Connection.CloseAsync();
-            }
-        }
-
-        return new EventCountsAggregate(0, 0, 0, 0);
-    }
-
-    private static System.Data.Common.DbParameter CreateParameter(
-        System.Data.Common.DbCommand cmd, string name, object value)
-    {
-        var param = cmd.CreateParameter();
-        param.ParameterName = name;
-        param.Value = value ?? System.DBNull.Value;
-        return param;
     }
 
     private async Task<EventCountsAggregate> LoadEventCountsFallbackAsync(
@@ -215,13 +153,13 @@ SELECT
             .Where(x => x.EventId == eventId)
             .ToListAsync(ct);
 
-        var userIds = members.Select(x => x.UserId).Distinct().ToList();
-        var usersById = await _db.Users
+        var eventUserIds = members.Select(x => x.UserId).Distinct().ToList();
+        var eventUsersById = await _db.Users
             .AsNoTracking()
-            .Where(x => userIds.Contains(x.Id))
+            .Where(x => eventUserIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, ct);
 
-        return new EventMemberDirectory(members, usersById);
+        return new EventMemberDirectory(members, eventUsersById);
     }
 
     private Task<List<EventPhaseEntity>> LoadEventPhasesForUpdateAsync(

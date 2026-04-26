@@ -141,14 +141,6 @@ public record PagedResult<T>(
 }
 
 /// <summary>
-/// Pagination parameters for list endpoints.
-/// </summary>
-public record PageRequest(
-    int Skip = 0,
-    int Take = 50
-);
-
-/// <summary>
 /// Canonical paginated vote-audit payload for the admin surface.
 /// </summary>
 public record AdminVotesPagedDto(
@@ -198,16 +190,3 @@ public record WishlistItemDto(
 );
 
 public record CreateWishlistItemRequest(string Title, string? Url, string? Notes);
-
-public record SecretSantaMeDto(
-    string DrawId,
-    string EventCode,
-    PublicUserDto Receiver
-);
-
-public record CreateSecretSantaDrawRequest(string? EventCode);
-
-public record SecretSantaDrawDto(string Id, string EventCode, DateTimeOffset CreatedAtUtc, bool IsLocked);
-
-// NOTE: Hub DTOs live in Canhoes.Api.DTOs (HubPostDto, HubCommentDto, polls, requests)
-// to keep the API layer clean and avoid name collisions with domain models.

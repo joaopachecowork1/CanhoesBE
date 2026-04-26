@@ -1,10 +1,8 @@
 using Canhoes.Api.Access;
-using Canhoes.Api.Caching;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
 using Canhoes.Api.Services;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -21,6 +19,7 @@ public sealed partial class EventsController : ControllerBase
     private readonly IWebHostEnvironment? _env;
     private readonly SecretSantaService _secretSanta;
     private readonly IMemoryCache _cache;
+    private readonly Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub> _hub;
 
     private sealed record EventAccessContext(
         EventEntity Event,
@@ -36,37 +35,67 @@ public sealed partial class EventsController : ControllerBase
         List<EventMemberEntity> Members,
         Dictionary<Guid, UserEntity> UsersById);
 
-    public EventsController(CanhoesDbContext db, IWebHostEnvironment? env = null, SecretSantaService? secretSanta = null, IMemoryCache? cache = null)
+    public EventsController(
+        CanhoesDbContext db, 
+        IWebHostEnvironment? env = null, 
+        SecretSantaService? secretSanta = null, 
+        IMemoryCache? cache = null,
+        Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub>? hub = null)
     {
         _db = db;
         _env = env;
         _secretSanta = secretSanta!;
         _cache = cache!;
+        _hub = hub!;
     }
 
     /// <summary>
-    /// Lists events ordered by the currently active cycle first.
+    /// Lists all events, ordering by the currently active event first, then alphabetically.
+    /// Results are cached for 60 seconds.
     /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A list of event summaries.</returns>
     [HttpGet]
     public async Task<ActionResult<List<EventSummaryDto>>> ListEvents(CancellationToken ct)
     {
-        var items = await LoadEventSummariesAsync(ct);
-        return Ok(items);
+        const string cacheKey = "EventsList";
+        if (_cache.TryGetValue(cacheKey, out List<EventSummaryDto>? cached))
+        {
+            return Ok(cached);
+        }
+
+        var eventSummaries = await LoadEventSummariesAsync(ct);
+        _cache.Set(cacheKey, eventSummaries, TimeSpan.FromSeconds(60));
+
+        return Ok(eventSummaries);
     }
 
+    /// <summary>
+    /// Retrieves the full context for a specific event, including members and all defined phases.
+    /// Requires membership or admin access. Results are cached for 30 seconds.
+    /// </summary>
+    /// <param name="eventId">The unique event identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The event context containing summaries, members, and phases.</returns>
     [HttpGet("{eventId}")]
     public async Task<ActionResult<EventContextDto>> GetEventContext(
         [FromRoute] string eventId,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
-        if (error is not null) return error;
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
+        if (accessError is not null) return accessError;
 
-        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var members = directory.Members;
-        var userLookup = directory.UsersById;
+        var cacheKey = $"EventContext_{eventId}";
+        if (_cache.TryGetValue(cacheKey, out EventContextDto? cached))
+        {
+            return Ok(cached);
+        }
 
-        var userDtos = members
+        var memberDirectory = await LoadEventMemberDirectoryAsync(eventId, ct);
+        var members = memberDirectory.Members;
+        var userLookup = memberDirectory.UsersById;
+
+        var eventUserDtos = members
             .Where(x => userLookup.ContainsKey(x.UserId))
             .OrderByDescending(x => x.Role == EventRoles.Admin)
             .ThenBy(x => userLookup.TryGetValue(x.UserId, out var user)
@@ -79,64 +108,95 @@ public sealed partial class EventsController : ControllerBase
             })
             .ToList();
 
-        var phaseDtos = (await LoadEventPhasesAsync(eventId, ct))
+        var eventPhaseDtos = (await LoadEventPhasesAsync(eventId, ct))
             .Select(ToEventPhaseDto)
             .ToList();
 
-        var activePhase = phaseDtos.FirstOrDefault(x => x.IsActive);
+        var activeEventPhase = eventPhaseDtos.FirstOrDefault(x => x.IsActive);
 
-        return Ok(new EventContextDto(
-            ToEventSummaryDto(access.Event),
-            userDtos,
-            phaseDtos,
-            activePhase
-        ));
+        var eventContext = new EventContextDto(
+            ToEventSummaryDto(eventAccess.Event),
+            eventUserDtos,
+            eventPhaseDtos,
+            activeEventPhase
+        );
+
+        _cache.Set(cacheKey, eventContext, TimeSpan.FromSeconds(30));
+
+        return Ok(eventContext);
     }
 
     /// <summary>
-    /// Returns the event shell snapshot used by the home screen and chrome to
-    /// decide what the member can see and what action matters next.
-    /// Optimized: phases loaded once, counts consolidated, output-cached 15s.
+    /// Returns a high-level overview of the event for the member dashboard.
+    /// Optimized to consolidate counts and module visibility in a single response.
+    /// Results are cached for 30 seconds.
     /// </summary>
+    /// <param name="eventId">The unique event identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>An overview containing permissions, counts, and active phase information.</returns>
     [HttpGet("{eventId}/overview")]
     public async Task<ActionResult<EventOverviewDto>> GetEventOverview(
         [FromRoute] string eventId,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
-        if (error is not null) return error;
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
+        if (accessError is not null) return accessError;
 
-        var phases = await LoadEventPhasesAsync(eventId, ct);
-        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, access.UserId, access.IsAdmin, phases, ct);
-        var activePhaseEntity = moduleAccess.ActivePhase ?? phases.FirstOrDefault(x => x.IsActive);
-        var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
-        var nextPhase = phases
-            .Where(x => activePhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activePhaseEntity.StartDateUtc)
+        var cacheKey = $"EventOverview_{eventId}_{eventAccess.UserId}";
+        if (_cache.TryGetValue(cacheKey, out EventOverviewDto? cached))
+        {
+            return Ok(cached);
+        }
+
+        var eventPhases = await LoadEventPhasesAsync(eventId, ct);
+        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, eventAccess.UserId, eventAccess.IsAdmin, eventPhases, ct);
+        
+        var activeEventPhaseEntity = moduleAccess.ActivePhase ?? eventPhases.FirstOrDefault(x => x.IsActive);
+        var activeEventPhase = activeEventPhaseEntity is null ? null : ToEventPhaseDto(activeEventPhaseEntity);
+        var nextEventPhase = eventPhases
+            .Where(x => activeEventPhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activeEventPhaseEntity.StartDateUtc)
             .OrderBy(x => x.StartDateUtc)
             .Select(ToEventPhaseDto)
             .FirstOrDefault();
 
-        var activeCategories = await LoadActiveCategoriesAsync(eventId, ct);
-        var categoryIds = activeCategories.Select(x => x.Id).ToList();
-        var submittedVoteCount = await CountSubmittedVotesAsync(access.UserId, categoryIds, ct);
-        var counts = await LoadEventCountsAsync(eventId, ct);
-        var userWishlistCount = await CountWishlistItemsAsync(eventId, access.UserId, ct);
-        var userProposalCount = await _db.CategoryProposals.AsNoTracking().CountAsync(x => x.EventId == eventId && x.ProposedByUserId == access.UserId, ct);
-        var canSubmitProposal = activePhaseEntity?.Type == EventPhaseTypes.Proposals && IsPhaseOpen(activePhaseEntity);
-        var canVote = activePhaseEntity?.Type == EventPhaseTypes.Voting && IsPhaseOpen(activePhaseEntity);
+        // Optimized consolidated projection
+        var eventStats = await _db.Events
+            .AsNoTracking()
+            .Where(e => e.Id == eventId)
+            .Select(e => new
+            {
+                ActiveCategoryCount = _db.AwardCategories.Count(c => c.EventId == eventId && c.IsActive),
+                SubmittedVotes = _db.Votes.Count(v => v.UserId == eventAccess.UserId && _db.AwardCategories.Any(c => c.Id == v.CategoryId && c.EventId == eventId && c.IsActive))
+                    + _db.UserVotes.Count(uv => uv.VoterUserId == eventAccess.UserId && _db.AwardCategories.Any(c => c.Id == uv.CategoryId && c.EventId == eventId && c.IsActive)),
+                MemberCount = _db.EventMembers.Count(m => m.EventId == eventId),
+                PostCount = _db.HubPosts.Count(p => p.EventId == eventId),
+                PendingProposals = _db.CategoryProposals.Count(cp => cp.EventId == eventId && cp.Status == ProposalStatus.Pending),
+                UserWishlistCount = _db.WishlistItems.Count(w => w.EventId == eventId && w.UserId == eventAccess.UserId),
+                UserProposalCount = _db.CategoryProposals.Count(cp => cp.EventId == eventId && cp.ProposedByUserId == eventAccess.UserId)
+            })
+            .FirstOrDefaultAsync(ct);
 
-        return Ok(new EventOverviewDto(
-            ToEventSummaryDto(access.Event),
-            activePhase,
-            nextPhase,
-            new EventPermissionsDto(access.IsAdmin, access.IsMember, access.CanAccess, canSubmitProposal, canVote, access.CanManage),
-            new EventCountsDto(counts.MemberCount, counts.HubPostCount, activeCategories.Count, counts.PendingCategoryProposalsCount, userWishlistCount),
+        if (eventStats == null) return NotFound();
+
+        var userCanSubmitProposal = activeEventPhaseEntity?.Type == EventPhaseTypes.Proposals && IsPhaseOpen(activeEventPhaseEntity);
+        var userCanVote = activeEventPhaseEntity?.Type == EventPhaseTypes.Voting && IsPhaseOpen(activeEventPhaseEntity);
+
+        var eventOverview = new EventOverviewDto(
+            ToEventSummaryDto(eventAccess.Event),
+            activeEventPhase,
+            nextEventPhase,
+            new EventPermissionsDto(eventAccess.IsAdmin, eventAccess.IsMember, eventAccess.CanAccess, userCanSubmitProposal, userCanVote, eventAccess.CanManage),
+            new EventCountsDto(eventStats.MemberCount, eventStats.PostCount, eventStats.ActiveCategoryCount, eventStats.PendingProposals, eventStats.UserWishlistCount),
             moduleAccess.HasSecretSantaDraw,
             moduleAccess.HasSecretSantaAssignment,
-            userWishlistCount,
-            userProposalCount,
-            submittedVoteCount,
-            activeCategories.Count,
-            moduleAccess.EffectiveModules));
+            eventStats.UserWishlistCount,
+            eventStats.UserProposalCount,
+            eventStats.SubmittedVotes,
+            eventStats.ActiveCategoryCount,
+            moduleAccess.EffectiveModules);
+
+        _cache.Set(cacheKey, eventOverview, TimeSpan.FromSeconds(30));
+
+        return Ok(eventOverview);
     }
 }

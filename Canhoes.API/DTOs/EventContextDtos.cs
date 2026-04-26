@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace Canhoes.Api.DTOs;
 
 /// <summary>
@@ -378,7 +380,7 @@ public record EventVoteDto(
     Guid UserId,
     string CategoryId,
     string OptionId,
-    string PhaseId
+    DateTime UpdatedAtUtc
 );
 
 public record EventProposalDto(
@@ -418,7 +420,7 @@ public record EventWishlistItemDto(
 );
 
 public record CreateEventWishlistItemRequest(
-    string Title,
-    string? Link,
-    string? Notes
+    [Required][StringLength(256)] string Title,
+    [StringLength(1024)] string? Link,
+    [StringLength(2000)] string? Notes
 );

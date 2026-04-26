@@ -1,5 +1,6 @@
 using Canhoes.Api.Access;
 using Canhoes.Api.Models;
+using Canhoes.Api.DTOs;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using static Canhoes.Api.Controllers.EventsControllerMappers;
@@ -8,34 +9,40 @@ namespace Canhoes.Api.Controllers;
 
 public sealed partial class EventsController
 {
+    /// <summary>
+    /// Retrieves the initial context for the currently active event, including phases and basic permissions.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The active event context containing summary and overview information.</returns>
     [HttpGet("active/context")]
     public async Task<ActionResult<EventActiveContextDto>> GetActiveEventContext(CancellationToken ct)
     {
-        var activeEvent = await _db.Events
+        var activeEventEntity = await _db.Events
             .AsNoTracking()
             .OrderByDescending(x => x.IsActive)
             .ThenBy(x => x.Name)
             .FirstOrDefaultAsync(ct);
 
-        if (activeEvent is null) return NotFound();
+        if (activeEventEntity is null) return NotFound();
 
-        var (access, error) = await RequireEventAccessAsync(activeEvent.Id, ct);
-        if (error is not null) return error;
+        var (eventUserAccess, eventAccessError) = await RequireEventAccessAsync(activeEventEntity.Id, ct);
+        if (eventAccessError is not null) return eventAccessError;
 
-        var phases = await LoadEventPhasesAsync(activeEvent.Id, ct);
-        var activePhaseEntity = phases.FirstOrDefault(x => x.IsActive);
-        var activePhase = activePhaseEntity is null ? null : ToEventPhaseDto(activePhaseEntity);
-        var nextPhase = phases
-            .Where(x => activePhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activePhaseEntity.StartDateUtc)
+        var eventPhases = await LoadEventPhasesAsync(activeEventEntity.Id, ct);
+        var activeEventPhaseEntity = eventPhases.FirstOrDefault(x => x.IsActive);
+        var activeEventPhaseDto = activeEventPhaseEntity is null ? null : ToEventPhaseDto(activeEventPhaseEntity);
+        
+        var nextEventPhaseDto = eventPhases
+            .Where(x => activeEventPhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activeEventPhaseEntity.StartDateUtc)
             .OrderBy(x => x.StartDateUtc)
             .Select(ToEventPhaseDto)
             .FirstOrDefault();
 
-        var overviewDto = new EventOverviewDto(
-            ToEventSummaryDto(activeEvent),
-            activePhase,
-            nextPhase,
-            new EventPermissionsDto(access.IsAdmin, access.IsMember, access.CanAccess, false, false, access.CanManage),
+        var defaultOverviewDto = new EventOverviewDto(
+            ToEventSummaryDto(activeEventEntity),
+            activeEventPhaseDto,
+            nextEventPhaseDto,
+            new EventPermissionsDto(eventUserAccess.IsAdmin, eventUserAccess.IsMember, eventUserAccess.CanAccess, false, false, eventUserAccess.CanManage),
             new EventCountsDto(0, 0, 0, 0, 0),
             false,
             false,
@@ -43,39 +50,65 @@ public sealed partial class EventsController
             0,
             0,
             0,
-            access.IsAdmin
+            eventUserAccess.IsAdmin
                 ? new EventModulesDto(true, true, true, true, true, true, true, true, true, true)
                 : new EventModulesDto(true, false, true, false, false, false, false, false, false, false)
         );
 
-        return Ok(new EventActiveContextDto(ToEventSummaryDto(activeEvent), overviewDto));
+        return Ok(new EventActiveContextDto(ToEventSummaryDto(activeEventEntity), defaultOverviewDto));
     }
 
+    /// <summary>
+    /// Retrieves a home-screen snapshot for the currently active event.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The home snapshot including overview, voting, secret santa and recent posts.</returns>
+    [HttpGet("active/home-snapshot")]
+    public async Task<ActionResult<EventHomeSnapshotDto>> GetActiveEventHomeSnapshot(CancellationToken ct)
+    {
+        var activeEventEntity = await _db.Events
+            .AsNoTracking()
+            .OrderByDescending(x => x.IsActive)
+            .ThenBy(x => x.Name)
+            .FirstOrDefaultAsync(ct);
+
+        if (activeEventEntity is null) return NotFound();
+
+        return await GetEventHomeSnapshot(activeEventEntity.Id, ct);
+    }
+
+    /// <summary>
+    /// Retrieves a comprehensive snapshot of the event's current state for the home screen.
+    /// Combines overview, voting progress, secret santa status and recent feed activity.
+    /// </summary>
+    /// <param name="eventId">The event identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The complete home snapshot payload.</returns>
     [HttpGet("{eventId}/home-snapshot")]
     public async Task<ActionResult<EventHomeSnapshotDto>> GetEventHomeSnapshot([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
-        if (error is not null) return error;
+        var (eventUserAccess, eventAccessError) = await RequireEventAccessAsync(eventId, ct);
+        if (eventAccessError is not null) return eventAccessError;
 
-        var overview = await GetEventOverview(eventId, ct);
-        if (overview.Result is not OkObjectResult overviewOk || overviewOk.Value is not EventOverviewDto overviewDto)
+        var eventOverviewResult = await GetEventOverview(eventId, ct);
+        if (eventOverviewResult.Result is not OkObjectResult overviewOk || overviewOk.Value is not EventOverviewDto eventOverviewDto)
         {
-            return overview.Result ?? NotFound();
+            return eventOverviewResult.Result ?? NotFound();
         }
 
-        var voting = await GetVotingOverview(eventId, ct);
-        if (voting.Result is not OkObjectResult votingOk || votingOk.Value is not EventVotingOverviewDto votingDto)
+        var eventVotingResult = await GetVotingOverview(eventId, ct);
+        if (eventVotingResult.Result is not OkObjectResult votingOk || votingOk.Value is not EventVotingOverviewDto votingOverviewDto)
         {
-            return voting.Result ?? NotFound();
+            return eventVotingResult.Result ?? NotFound();
         }
 
-        var secretSanta = await GetSecretSantaOverview(eventId, ct);
-        if (secretSanta.Result is not OkObjectResult santaOk || santaOk.Value is not EventSecretSantaOverviewDto secretSantaDto)
+        var eventSecretSantaResult = await GetSecretSantaOverview(eventId, ct);
+        if (eventSecretSantaResult.Result is not OkObjectResult santaOk || santaOk.Value is not EventSecretSantaOverviewDto secretSantaOverviewDto)
         {
-            return secretSanta.Result ?? NotFound();
+            return eventSecretSantaResult.Result ?? NotFound();
         }
 
-        var recentPosts = await _db.HubPosts
+        var recentPostsEntities = await _db.HubPosts
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.IsPinned)
@@ -83,16 +116,16 @@ public sealed partial class EventsController
             .Take(3)
             .ToListAsync(ct);
 
-        var postIds = recentPosts.Select(x => x.Id).ToList();
-        var postDtos = recentPosts.Count == 0
+        var recentPostIds = recentPostsEntities.Select(x => x.Id).ToList();
+        var recentPostDtos = recentPostsEntities.Count == 0
             ? []
-            : await BuildFeedPostDtosAsync(eventId, access.UserId, postIds, ct, recentPosts);
+            : await BuildFeedPostDtosAsync(eventId, eventUserAccess.UserId, recentPostIds, ct, recentPostsEntities);
 
         return Ok(new EventHomeSnapshotDto(
-            ToEventSummaryDto(access.Event),
-            overviewDto,
-            votingDto,
-            secretSantaDto,
-            postDtos));
+            ToEventSummaryDto(eventUserAccess.Event),
+            eventOverviewDto,
+            votingOverviewDto,
+            secretSantaOverviewDto,
+            recentPostDtos));
     }
 }

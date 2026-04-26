@@ -13,11 +13,7 @@ public sealed class HubPostDto
     public string AuthorName { get; init; } = "";
 
     public string Text { get; init; } = "";
-
-    // Back-compat (single media)
     public string? MediaUrl { get; init; }
-
-    // Preferred: multi-media carousel
     public List<string> MediaUrls { get; init; } = new();
 
     public bool IsPinned { get; init; }
@@ -29,9 +25,9 @@ public sealed class HubPostDto
 
     public Dictionary<string, int> ReactionCounts { get; init; } = new();
     public List<string> MyReactions { get; init; } = new();
+
     public bool LikedByMe { get; init; }
     public bool DownvotedByMe { get; init; }
 
-    // Optional poll (single-choice, can change vote)
     public HubPollDto? Poll { get; init; }
 }

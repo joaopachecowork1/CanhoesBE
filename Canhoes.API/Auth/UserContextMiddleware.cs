@@ -156,6 +156,14 @@ public sealed class UserContextMiddleware
         ctx.Items["CurrentUser"] = snapshot.User;
         ctx.Items["UserId"] = snapshot.UserId;
         ctx.Items["IsAdmin"] = snapshot.IsAdmin;
+
+        if (snapshot.IsAdmin && ctx.User?.Identity is ClaimsIdentity identity)
+        {
+            if (!identity.HasClaim(c => (c.Type == "role" || c.Type == ClaimTypes.Role) && c.Value == "admin"))
+            {
+                identity.AddClaim(new Claim("role", "admin"));
+            }
+        }
     }
 
     private sealed record UserContextSnapshot(PublicUserDto User, Guid UserId, bool IsAdmin);

@@ -1,7 +1,6 @@
 using Canhoes.Api.Access;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Models;
-using Canhoes.Api.Startup;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,39 +9,39 @@ namespace Canhoes.Api.Controllers;
 public sealed partial class EventsController
 {
     private async Task<ActionResult?> RequireManageAccessAsync(string eventId, CancellationToken ct) =>
-        (await RequireEventAccessAsync(eventId, ct, requireManage: true)).Error;
+        (await RequireEventAccessAsync(eventId, ct, requireManage: true)).accessError;
 
-    private async Task<(EventAccessContext Access, ActionResult? Error)> RequireEventAccessAsync(
+    private async Task<(EventAccessContext eventAccess, ActionResult? accessError)> RequireEventAccessAsync(
         string eventId,
         CancellationToken ct,
         bool requireManage = false)
     {
-        var access = await GetEventAccessAsync(eventId, ct);
-        if (access is null) return (default!, NotFound());
-        if (requireManage ? !access.CanManage : !access.CanAccess) return (default!, Forbid());
-        return (access, null);
+        var eventAccess = await GetEventAccessAsync(eventId, ct);
+        if (eventAccess is null) return (default!, NotFound());
+        if (requireManage ? !eventAccess.CanManage : !eventAccess.CanAccess) return (default!, Forbid());
+        return (eventAccess, null);
     }
 
-    private async Task<(EventAccessContext Access, EventModuleAccessSnapshot Snapshot, ActionResult? Error)> RequireEventModuleAccessAsync(
+    private async Task<(EventAccessContext eventAccess, EventModuleAccessSnapshot moduleAccessSnapshot, ActionResult? accessError)> RequireEventModuleAccessAsync(
         string eventId,
         EventModuleKey moduleKey,
         CancellationToken ct)
     {
-        var (access, error) = await RequireEventAccessAsync(eventId, ct);
-        if (error is not null) return (default!, default!, error);
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
+        if (accessError is not null) return (default!, default!, accessError);
 
-        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(
+        var moduleAccessSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(
             _db,
             eventId,
-            access.UserId,
-            access.IsAdmin,
+            eventAccess.UserId,
+            eventAccess.IsAdmin,
             ct);
-        if (!EventModuleAccessEvaluator.IsModuleEnabled(snapshot.EffectiveModules, moduleKey))
+        if (!EventModuleAccessEvaluator.IsModuleEnabled(moduleAccessSnapshot.EffectiveModules, moduleKey))
         {
             return (default!, default!, Forbid());
         }
 
-        return (access, snapshot, null);
+        return (eventAccess, moduleAccessSnapshot, null);
     }
 
     private async Task<EventAccessContext?> GetEventAccessAsync(string eventId, CancellationToken ct)
@@ -52,13 +51,13 @@ public sealed partial class EventsController
             .FirstOrDefaultAsync(x => x.Id == eventId, ct);
         if (eventEntity is null) return null;
 
-        var userId = HttpContext.GetUserId();
-        var isAdmin = HttpContext.IsAdmin();
-        var isMember = await _db.EventMembers
+        var currentUserId = HttpContext.GetUserId();
+        var isCurrentUserAdmin = HttpContext.IsAdmin();
+        var isCurrentUserMember = await _db.EventMembers
             .AsNoTracking()
-            .AnyAsync(x => x.EventId == eventId && x.UserId == userId, ct);
+            .AnyAsync(x => x.EventId == eventId && x.UserId == currentUserId, ct);
 
-        return new EventAccessContext(eventEntity, userId, isAdmin, isMember);
+        return new EventAccessContext(eventEntity, currentUserId, isCurrentUserAdmin, isCurrentUserMember);
     }
 
     private Task<EventPhaseEntity?> GetActivePhaseAsync(
@@ -75,16 +74,16 @@ public sealed partial class EventsController
         string eventId,
         CancellationToken ct)
     {
-        var eventCodes = GetSecretSantaEventCodeCandidates(eventId);
+        var secretSantaEventCodes = GetSecretSantaEventCodeCandidates(eventId);
         return _db.SecretSantaDraws
             .AsNoTracking()
-            .Where(x => eventCodes.Contains(x.EventCode))
+            .Where(x => secretSantaEventCodes.Contains(x.EventCode))
             .OrderByDescending(x => x.CreatedAtUtc)
             .FirstOrDefaultAsync(ct);
     }
 
-    private static bool IsPhaseOpen(EventPhaseEntity? phase) =>
-        EventModuleAccessEvaluator.IsPhaseOpen(phase);
+    private static bool IsPhaseOpen(EventPhaseEntity? eventPhase) =>
+        EventModuleAccessEvaluator.IsPhaseOpen(eventPhase);
 
     private Task<CanhoesEventStateEntity> GetOrCreateEventStateAsync(
         string eventId,
@@ -98,21 +97,21 @@ public sealed partial class EventsController
 
     private static List<string> GetSecretSantaEventCodeCandidates(string eventId)
     {
-        var codes = new List<string> { eventId };
+        var candidateCodes = new List<string> { eventId };
 
         if (string.Equals(
             eventId,
             EventContextDefaults.DefaultEventId,
             StringComparison.OrdinalIgnoreCase))
         {
-            var legacyYearCode = $"canhoes{DateTime.UtcNow.Year}";
-            if (!codes.Contains(legacyYearCode, StringComparer.OrdinalIgnoreCase))
+            var legacyYearEventCode = $"canhoes{DateTime.UtcNow.Year}";
+            if (!candidateCodes.Contains(legacyYearEventCode, StringComparer.OrdinalIgnoreCase))
             {
-                codes.Add(legacyYearCode);
+                candidateCodes.Add(legacyYearEventCode);
             }
         }
 
-        return codes;
+        return candidateCodes;
     }
 
     private static EventAdminModuleVisibilityDto ParseModuleVisibility(
@@ -120,28 +119,28 @@ public sealed partial class EventsController
         EventModuleAccessEvaluator.ParseModuleVisibility(legacyState);
 
     private static string SerializeModuleVisibility(
-        EventAdminModuleVisibilityDto visibility) =>
-        EventModuleAccessEvaluator.SerializeModuleVisibility(visibility);
+        EventAdminModuleVisibilityDto moduleVisibility) =>
+        EventModuleAccessEvaluator.SerializeModuleVisibility(moduleVisibility);
 
     private static void ApplyLegacyStateForPhase(
         CanhoesEventStateEntity legacyState,
         string phaseType) =>
         EventModuleAccessEvaluator.ApplyLegacyStateForPhase(legacyState, phaseType);
 
-    private static string? NormalizeProposalStatusFilter(string? status) =>
-        string.IsNullOrWhiteSpace(status) ? null : NormalizeProposalStatus(status);
+    private static string? NormalizeProposalStatusFilter(string? proposalStatus) =>
+        string.IsNullOrWhiteSpace(proposalStatus) ? null : NormalizeProposalStatus(proposalStatus);
 
-    private static string? NormalizeProposalStatus(string status)
+    private static string? NormalizeProposalStatus(string proposalStatus)
     {
-        var normalizedStatus = status.Trim().ToLowerInvariant();
-        return ProposalStatus.IsValid(normalizedStatus) ? normalizedStatus : null;
+        var normalizedProposalStatus = proposalStatus.Trim().ToLowerInvariant();
+        return ProposalStatus.IsValid(normalizedProposalStatus) ? normalizedProposalStatus : null;
     }
 
-    private static string? NormalizeNomineeStatusFilter(string? status)
+    private static string? NormalizeNomineeStatusFilter(string? nomineeStatus)
     {
-        if (string.IsNullOrWhiteSpace(status)) return null;
+        if (string.IsNullOrWhiteSpace(nomineeStatus)) return null;
 
-        var normalizedStatus = status.Trim().ToLowerInvariant();
-        return ProposalStatus.IsValid(normalizedStatus) ? normalizedStatus : null;
+        var normalizedNomineeStatus = nomineeStatus.Trim().ToLowerInvariant();
+        return ProposalStatus.IsValid(normalizedNomineeStatus) ? normalizedNomineeStatus : null;
     }
 }

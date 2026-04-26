@@ -1,5 +1,4 @@
 using Canhoes.Api.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -63,11 +62,6 @@ public static class DatabaseSetupRunner
             return true;
         }
 
-        if (exception is SqlException sqlException)
-        {
-            return sqlException.Errors.Cast<SqlError>().Any(IsTransientSqlError);
-        }
-
         if (exception is InvalidOperationException invalidOperationException
             && invalidOperationException.Message.Contains("transient failure", StringComparison.OrdinalIgnoreCase))
         {
@@ -75,20 +69,5 @@ public static class DatabaseSetupRunner
         }
 
         return exception.InnerException is not null && IsTransientSqlFailure(exception.InnerException);
-    }
-
-    private static bool IsTransientSqlError(SqlError error)
-    {
-        // Azure SQL transient connection errors and throttling/failover cases.
-        return error.Number is
-            4060 or   // Cannot open database requested by the login.
-            40197 or  // Service encountered an error processing the request.
-            40501 or  // Service busy / throttled.
-            40613 or  // Database is not currently available.
-            49918 or
-            49919 or
-            49920 or
-            10928 or
-            10929;
     }
 }

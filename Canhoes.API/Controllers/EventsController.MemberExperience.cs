@@ -4,7 +4,9 @@ using Canhoes.Api.DTOs;
 using Canhoes.Api.Media;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using static Canhoes.Api.Controllers.EventsControllerMappers;
 
 namespace Canhoes.Api.Controllers;
@@ -15,320 +17,409 @@ public sealed partial class EventsController
 
     private static string NormalizeFeedReactionEmoji(string? emoji)
     {
-        var value = string.IsNullOrWhiteSpace(emoji) ? DefaultFeedReactionEmoji : emoji.Trim();
-        return value.Length > 16 ? value[..16] : value;
+        var normalizedValue = string.IsNullOrWhiteSpace(emoji) ? DefaultFeedReactionEmoji : emoji.Trim();
+        return normalizedValue.Length > 16 ? normalizedValue[..16] : normalizedValue;
     }
 
     // ========================================================================
     // FEED INTERACTION ENDPOINTS (replaces HubController functionality)
     // ========================================================================
 
+    /// <summary>
+    /// Toggles a like reaction on a feed post.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/like")]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("standard")]
     public async Task<ActionResult<object>> ToggleFeedLike([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (post is null) return NotFound();
+        var targetPost = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (targetPost is null) return NotFound();
 
-        var existing = await _db.HubPostReactions
-            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == DefaultFeedReactionEmoji, ct);
+        var existingReaction = await _db.HubPostReactions
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userAccess.UserId && x.Emoji == DefaultFeedReactionEmoji, ct);
 
-        var liked = existing is null;
-        if (existing is null)
+        var isNowLiked = existingReaction is null;
+        if (isNowLiked)
         {
-            _db.HubPostReactions.Add(new HubPostReactionEntity
-            {
-                PostId = postId,
-                UserId = access.UserId,
-                Emoji = DefaultFeedReactionEmoji,
-                CreatedAtUtc = DateTime.UtcNow
-            });
+            await AddPostLikeReactionAsync(postId, userAccess.UserId);
         }
         else
         {
-            _db.HubPostReactions.Remove(existing);
+            _db.HubPostReactions.Remove(existingReaction!);
         }
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new { liked });
+
+        await NotifyFeedPostLikedAsync(eventId, postId, isNowLiked, ct);
+
+        return Ok(new { liked = isNowLiked });
     }
 
+    private async Task AddPostLikeReactionAsync(string postId, Guid userId)
+    {
+        await _db.HubPostReactions.AddAsync(new HubPostReactionEntity
+        {
+            PostId = postId,
+            UserId = userId,
+            Emoji = DefaultFeedReactionEmoji,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+    }
+
+    private async Task NotifyFeedPostLikedAsync(string eventId, string postId, bool isLiked, CancellationToken ct)
+    {
+        await _hub.Clients.Group($"event_{eventId}")
+            .SendAsync("PostLiked", new { postId, liked = isLiked }, ct);
+    }
+
+    /// <summary>
+    /// Toggles a downvote on a feed post.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/downvote")]
     public async Task<ActionResult<object>> ToggleFeedDownvote([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (!postExists) return NotFound();
+        var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (!isPostExisting) return NotFound();
 
-        var existing = await _db.HubPostDownvotes
-            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
+        var existingDownvote = await _db.HubPostDownvotes
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userAccess.UserId, ct);
 
-        var downvoted = existing is null;
-        if (existing is null)
+        var isNowDownvoted = existingDownvote is null;
+        if (isNowDownvoted)
         {
-            _db.HubPostDownvotes.Add(new HubPostDownvoteEntity
-            {
-                PostId = postId,
-                UserId = access.UserId,
-                CreatedAtUtc = DateTime.UtcNow
-            });
+            await AddPostDownvoteAsync(postId, userAccess.UserId);
         }
         else
         {
-            _db.HubPostDownvotes.Remove(existing);
+            _db.HubPostDownvotes.Remove(existingDownvote!);
         }
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new { downvoted });
+        return Ok(new { downvoted = isNowDownvoted });
     }
 
+    private async Task AddPostDownvoteAsync(string postId, Guid userId)
+    {
+        await _db.HubPostDownvotes.AddAsync(new HubPostDownvoteEntity
+        {
+            PostId = postId,
+            UserId = userId,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Toggles a specific emoji reaction on a feed post.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/reactions")]
     public async Task<ActionResult<object>> ToggleFeedReaction([FromRoute] string eventId, [FromRoute] string postId, [FromBody] ToggleEventFeedReactionRequest? req, CancellationToken ct)
     {
         return await ToggleFeedReactionInternalAsync(eventId, postId, NormalizeFeedReactionEmoji(req?.Emoji), ct);
     }
 
-    private async Task<ActionResult<object>> ToggleFeedReactionInternalAsync(string eventId, string postId, string emoji, CancellationToken ct)
+    private async Task<ActionResult<object>> ToggleFeedReactionInternalAsync(string eventId, string postId, string reactionEmoji, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (!postExists) return NotFound();
+        var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (!isPostExisting) return NotFound();
 
-        var existing = await _db.HubPostReactions
-            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId && x.Emoji == emoji, ct);
+        var existingReaction = await _db.HubPostReactions
+            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userAccess.UserId && x.Emoji == reactionEmoji, ct);
 
-        var active = existing is null;
-        if (existing is null)
+        var isNowActive = existingReaction is null;
+        if (isNowActive)
         {
-            _db.HubPostReactions.Add(new HubPostReactionEntity
-            {
-                PostId = postId,
-                UserId = access.UserId,
-                Emoji = emoji,
-                CreatedAtUtc = DateTime.UtcNow
-            });
+            await AddPostEmojiReactionAsync(postId, userAccess.UserId, reactionEmoji);
         }
         else
         {
-            _db.HubPostReactions.Remove(existing);
+            _db.HubPostReactions.Remove(existingReaction!);
         }
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new { emoji, active });
+        return Ok(new { emoji = reactionEmoji, active = isNowActive });
     }
 
+    private async Task AddPostEmojiReactionAsync(string postId, Guid userId, string emoji)
+    {
+        await _db.HubPostReactions.AddAsync(new HubPostReactionEntity
+        {
+            PostId = postId,
+            UserId = userId,
+            Emoji = emoji,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Retrieves all comments for a specific feed post.
+    /// </summary>
     [HttpGet("{eventId}/feed/posts/{postId}/comments")]
+    [ProducesResponseType(typeof(List<HubCommentDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<List<HubCommentDto>>> GetFeedComments([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest();
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var comments = await LoadFeedCommentDtosAsync(postId, access.UserId, ct);
-        if (comments.Count == 0)
+        var commentDtos = await LoadFeedCommentDtosAsync(postId, userAccess.UserId, ct);
+        if (commentDtos.Count == 0)
         {
-            var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-            if (!postExists) return NotFound();
+            var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+            if (!isPostExisting) return NotFound();
         }
 
-        return Ok(comments);
+        return Ok(commentDtos);
     }
 
+    /// <summary>
+    /// Adds a new comment to a feed post.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/comments")]
-    public async Task<ActionResult<HubCommentDto>> CreateFeedComment([FromRoute] string eventId, [FromRoute] string postId, [FromBody] CreateEventFeedCommentRequest req, CancellationToken ct)
+    public async Task<ActionResult<HubCommentDto>> CreateFeedComment([FromRoute] string eventId, [FromRoute] string postId, [FromBody] CreateEventFeedCommentRequest commentRequest, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
-        if (string.IsNullOrWhiteSpace(req?.Text)) return BadRequest("Text is required.");
+        if (string.IsNullOrWhiteSpace(commentRequest?.Text)) return BadRequest("Text is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var postExists = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (!postExists) return NotFound();
+        var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (!isPostExisting) return NotFound();
 
-        var user = await _db.Users.AsNoTracking()
-            .Where(u => u.Id == access.UserId)
+        var authorInfo = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == userAccess.UserId)
             .Select(u => new { u.Id, Name = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName! })
             .SingleOrDefaultAsync(ct);
 
-        var comment = new HubPostCommentEntity
+        var newComment = new HubPostCommentEntity
         {
             Id = Guid.NewGuid().ToString(),
             PostId = postId,
-            UserId = access.UserId,
-            Text = req.Text.Trim(),
+            UserId = userAccess.UserId,
+            Text = commentRequest.Text.Trim(),
             CreatedAtUtc = DateTime.UtcNow
         };
 
-        _db.HubPostComments.Add(comment);
+        _db.HubPostComments.Add(newComment);
         await _db.SaveChangesAsync(ct);
 
-        var userLookup = user is not null
-            ? new Dictionary<Guid, string> { { user.Id, user.Name } }
+        var userLookupTable = authorInfo is not null
+            ? new Dictionary<Guid, string> { { authorInfo.Id, authorInfo.Name } }
             : new Dictionary<Guid, string>();
 
-        return Ok(await BuildCreatedFeedCommentDtoAsync(comment, userLookup, ct));
+        var createdCommentDto = await BuildCreatedFeedCommentDtoAsync(newComment, userLookupTable, ct);
+
+        await NotifyCommentCreatedAsync(eventId, postId, createdCommentDto, ct);
+
+        return Ok(createdCommentDto);
     }
 
+    private async Task NotifyCommentCreatedAsync(string eventId, string postId, HubCommentDto commentDto, CancellationToken ct)
+    {
+        await _hub.Clients.Group($"event_{eventId}")
+            .SendAsync("CommentCreated", new { postId, comment = commentDto }, ct);
+    }
+
+    /// <summary>
+    /// Deletes a specific comment from a feed post.
+    /// </summary>
     [HttpDelete("{eventId}/feed/posts/{postId}/comments/{commentId}")]
     public async Task<ActionResult> DeleteFeedComment([FromRoute] string eventId, [FromRoute] string postId, [FromRoute] string commentId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
         if (string.IsNullOrWhiteSpace(commentId)) return BadRequest("commentId is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var comment = await _db.HubPostComments
-            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
-        if (comment is null) return NotFound();
-        if (comment.UserId != access.UserId && !access.IsAdmin) return Forbid();
+        var targetComment = await _db.HubPostComments
+            .Include(x => x.Post)
+            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId && x.Post.EventId == eventId, ct);
+        if (targetComment is null) return NotFound();
+        
+        var canUserDeleteComment = targetComment.UserId == userAccess.UserId || userAccess.IsAdmin;
+        if (!canUserDeleteComment) return Forbid();
 
-        // Cascade delete handles comment reactions
-        _db.HubPostComments.Remove(comment);
+        _db.HubPostComments.Remove(targetComment);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
 
+    /// <summary>
+    /// Toggles an emoji reaction on a comment.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/comments/{commentId}/reactions")]
-    public async Task<ActionResult<object>> ToggleFeedCommentReaction([FromRoute] string eventId, [FromRoute] string postId, [FromRoute] string commentId, [FromBody] ToggleEventFeedReactionRequest? req, CancellationToken ct)
+    public async Task<ActionResult<object>> ToggleFeedCommentReaction([FromRoute] string eventId, [FromRoute] string postId, [FromRoute] string commentId, [FromBody] ToggleEventFeedReactionRequest? reactionRequest, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
         if (string.IsNullOrWhiteSpace(commentId)) return BadRequest("commentId is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        var comment = await _db.HubPostComments
+        var isCommentValid = await _db.HubPostComments
             .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId, ct);
-        if (comment is null) return NotFound();
+            .AnyAsync(x => x.Id == commentId && x.PostId == postId && x.Post.EventId == eventId, ct);
+        if (!isCommentValid) return NotFound();
 
-        var emoji = NormalizeFeedReactionEmoji(req?.Emoji);
-        var existing = await _db.HubPostCommentReactions
-            .SingleOrDefaultAsync(x => x.CommentId == commentId && x.UserId == access.UserId && x.Emoji == emoji, ct);
+        var reactionEmoji = NormalizeFeedReactionEmoji(reactionRequest?.Emoji);
+        var existingReaction = await _db.HubPostCommentReactions
+            .SingleOrDefaultAsync(x => x.CommentId == commentId && x.UserId == userAccess.UserId && x.Emoji == reactionEmoji, ct);
 
-        var active = existing is null;
-        if (existing is null)
+        var isNowActive = existingReaction is null;
+        if (isNowActive)
         {
-            _db.HubPostCommentReactions.Add(new HubPostCommentReactionEntity
-            {
-                Id = Guid.NewGuid().ToString(),
-                CommentId = commentId,
-                UserId = access.UserId,
-                Emoji = emoji,
-                CreatedAtUtc = DateTime.UtcNow
-            });
+            await AddCommentReactionAsync(commentId, userAccess.UserId, reactionEmoji);
         }
         else
         {
-            _db.HubPostCommentReactions.Remove(existing);
+            _db.HubPostCommentReactions.Remove(existingReaction!);
         }
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new { emoji, active });
+        return Ok(new { emoji = reactionEmoji, active = isNowActive });
     }
 
+    private async Task AddCommentReactionAsync(string commentId, Guid userId, string emoji)
+    {
+        await _db.HubPostCommentReactions.AddAsync(new HubPostCommentReactionEntity
+        {
+            Id = Guid.NewGuid().ToString(),
+            CommentId = commentId,
+            UserId = userId,
+            Emoji = emoji,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Casts a vote in a feed poll associated with a post.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/poll/vote")]
-    public async Task<ActionResult<object>> VoteFeedPoll([FromRoute] string eventId, [FromRoute] string postId, [FromBody] VoteEventFeedPollRequest req, CancellationToken ct)
+    public async Task<ActionResult<object>> VoteFeedPoll([FromRoute] string eventId, [FromRoute] string postId, [FromBody] VoteEventFeedPollRequest voteRequest, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
-        if (req is null || string.IsNullOrWhiteSpace(req.OptionId)) return BadRequest("optionId is required.");
+        if (voteRequest is null || string.IsNullOrWhiteSpace(voteRequest.OptionId)) return BadRequest("optionId is required.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        // Sequential checks to avoid DbContext threading issues
-        var hasPoll = await _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
-        var hasPost = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        var isPollExisting = await _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
+        var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
 
-        if (!hasPoll || !hasPost) return NotFound();
+        if (!isPollExisting || !isPostExisting) return NotFound();
 
-        var optionId = req.OptionId.Trim();
-        var optionExists = await _db.HubPostPollOptions.AsNoTracking().AnyAsync(x => x.Id == optionId && x.PostId == postId, ct);
-        if (!optionExists) return BadRequest("Invalid optionId.");
+        var normalizedOptionId = voteRequest.OptionId.Trim();
+        var isOptionValid = await _db.HubPostPollOptions.AsNoTracking().AnyAsync(x => x.Id == normalizedOptionId && x.PostId == postId, ct);
+        if (!isOptionValid) return BadRequest("Invalid optionId.");
 
-        var existing = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == access.UserId, ct);
-        if (existing is null)
+        var existingPollVote = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userAccess.UserId, ct);
+        if (existingPollVote is null)
         {
-            _db.HubPostPollVotes.Add(new HubPostPollVoteEntity
-            {
-                Id = Guid.NewGuid().ToString(),
-                PostId = postId,
-                UserId = access.UserId,
-                OptionId = optionId,
-                CreatedAtUtc = DateTime.UtcNow
-            });
+            await CreatePollVoteAsync(postId, userAccess.UserId, normalizedOptionId);
         }
         else
         {
-            existing.OptionId = optionId;
-            existing.CreatedAtUtc = DateTime.UtcNow;
+            existingPollVote.OptionId = normalizedOptionId;
+            existingPollVote.CreatedAtUtc = DateTime.UtcNow;
         }
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new { optionId });
+
+        await NotifyPollVotedAsync(eventId, postId, normalizedOptionId, ct);
+
+        return Ok(new { optionId = normalizedOptionId });
     }
 
+    private async Task CreatePollVoteAsync(string postId, Guid userId, string optionId)
+    {
+        await _db.HubPostPollVotes.AddAsync(new HubPostPollVoteEntity
+        {
+            Id = Guid.NewGuid().ToString(),
+            PostId = postId,
+            UserId = userId,
+            OptionId = optionId,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+    }
+
+    private async Task NotifyPollVotedAsync(string eventId, string postId, string optionId, CancellationToken ct)
+    {
+        await _hub.Clients.Group($"event_{eventId}")
+            .SendAsync("PollVoted", new { postId, optionId }, ct);
+    }
+
+    /// <summary>
+    /// Toggles the pinned status of a feed post.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts/{postId}/pin")]
     public async Task<ActionResult<object>> ToggleFeedPostPin([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
-        if (error is not null) return error;
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (accessError is not null) return accessError;
 
-        var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (post is null) return NotFound();
+        var targetPost = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (targetPost is null) return NotFound();
 
-        post.IsPinned = !post.IsPinned;
+        targetPost.IsPinned = !targetPost.IsPinned;
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new { pinned = post.IsPinned });
+        return Ok(new { pinned = targetPost.IsPinned });
     }
 
+    /// <summary>
+    /// Deletes a feed post.
+    /// </summary>
     [HttpDelete("{eventId}/feed/posts/{postId}")]
     public async Task<ActionResult> DeleteFeedPost([FromRoute] string eventId, [FromRoute] string postId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(postId)) return BadRequest("postId is required.");
 
-        var (access, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
-        if (error is not null) return error;
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (accessError is not null) return accessError;
 
-        var post = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (post is null) return NotFound();
+        var targetPost = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        if (targetPost is null) return NotFound();
 
-        // Cascade delete is configured in OnModelCreating — the database handles
-        // removing reactions, comments, polls, media, etc. when the post is deleted.
-        _db.HubPosts.Remove(post);
+        _db.HubPosts.Remove(targetPost);
         await _db.SaveChangesAsync(ct);
 
         return NoContent();
     }
 
+    /// <summary>
+    /// Uploads images for use in a feed post.
+    /// </summary>
     [HttpPost("{eventId}/feed/uploads")]
     [RequestSizeLimit(25_000_000)]
     public async Task<ActionResult<List<string>>> UploadFeedImages([FromRoute] string eventId, IFormFileCollection files, CancellationToken ct)
     {
         if (files is null || files.Count == 0) return BadRequest("No files uploaded.");
 
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        return Ok(await SaveFeedUploadedFilesAsync(files, access.UserId, ct));
+        return Ok(await SaveFeedUploadedFilesAsync(files, userAccess.UserId, ct));
     }
 
     // ========================================================================
@@ -346,14 +437,14 @@ public sealed partial class EventsController
         if (comments.Count == 0) return new List<HubCommentDto>();
 
         var commentIds = comments.Select(c => c.Id).ToList();
-        var reactions = await _db.HubPostCommentReactions
+        var allReactions = await _db.HubPostCommentReactions
             .AsNoTracking()
             .Where(x => commentIds.Contains(x.CommentId))
             .Select(x => new { x.CommentId, x.UserId, x.Emoji })
             .ToListAsync(ct);
 
         // Pre-group reactions by comment to avoid N+1 LINQ iterations
-        var reactionsByComment = reactions
+        var reactionsByComment = allReactions
             .GroupBy(r => r.CommentId)
             .ToDictionary(
                 g => g.Key,
@@ -361,7 +452,7 @@ public sealed partial class EventsController
                     .ToDictionary(x => x.Key, x => x.Count()));
 
         var userIds = comments.Select(c => c.UserId).Distinct().ToList();
-        var users = await _db.Users.AsNoTracking()
+        var usersLookupTable = await _db.Users.AsNoTracking()
             .Where(u => userIds.Contains(u.Id))
             .Select(u => new { u.Id, Name = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName! })
             .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
@@ -372,9 +463,9 @@ public sealed partial class EventsController
                 ? r
                 : new Dictionary<string, int>();
 
-            var myReactions = userId == Guid.Empty
+            var myReactionsOnComment = userId == Guid.Empty
                 ? new List<string>()
-                : reactions
+                : allReactions
                     .Where(r => r.CommentId == comment.Id && r.UserId == userId)
                     .Select(r => r.Emoji)
                     .Distinct()
@@ -384,11 +475,11 @@ public sealed partial class EventsController
                 comment.Id,
                 comment.PostId,
                 comment.UserId,
-                users.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
+                usersLookupTable.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
                 comment.Text,
                 comment.CreatedAtUtc,
                 commentReactions,
-                myReactions
+                myReactionsOnComment
             );
         }).ToList();
     }
@@ -399,7 +490,7 @@ public sealed partial class EventsController
         CancellationToken ct)
     {
         // Try lookup first; fall back to single query only if user is not in the batch
-        var displayName = userLookup.TryGetValue(comment.UserId, out var name)
+        var authorDisplayName = userLookup.TryGetValue(comment.UserId, out var name)
             ? name
             : await _db.Users.AsNoTracking()
                 .Where(u => u.Id == comment.UserId)
@@ -411,7 +502,7 @@ public sealed partial class EventsController
             comment.Id,
             comment.PostId,
             comment.UserId,
-            displayName,
+            authorDisplayName,
             comment.Text,
             comment.CreatedAtUtc,
             new Dictionary<string, int>(),
@@ -424,7 +515,7 @@ public sealed partial class EventsController
         var hubDir = Path.Combine(webRoot, "uploads", "hub");
         Directory.CreateDirectory(hubDir);
 
-        var urls = new List<string>();
+        var uploadedUrls = new List<string>();
         var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
 
         foreach (var file in files.Take(10))
@@ -436,19 +527,19 @@ public sealed partial class EventsController
             if (!allowedExtensions.Contains(ext.ToLowerInvariant())) continue;
 
             var fileName = $"{Guid.NewGuid():N}{ext}";
-            var abs = Path.Combine(hubDir, fileName);
+            var absPath = Path.Combine(hubDir, fileName);
 
             await using var input = file.OpenReadStream();
-            await using var output = new FileStream(abs, FileMode.Create);
+            await using var output = new FileStream(absPath, FileMode.Create);
             await input.CopyToAsync(output, ct);
 
-            var url = $"/uploads/hub/{fileName}";
-            urls.Add(url);
+            var fileUrl = $"/uploads/hub/{fileName}";
+            uploadedUrls.Add(fileUrl);
 
             _db.HubPostMedia.Add(new HubPostMediaEntity
             {
                 Id = Guid.NewGuid().ToString(),
-                Url = url,
+                Url = fileUrl,
                 PostId = null,
                 OriginalFileName = file.FileName,
                 FileSizeBytes = file.Length,
@@ -458,23 +549,26 @@ public sealed partial class EventsController
             });
         }
 
-        if (urls.Count > 0) await _db.SaveChangesAsync(ct);
-        return urls;
+        if (uploadedUrls.Count > 0) await _db.SaveChangesAsync(ct);
+        return uploadedUrls;
     }
 
+    /// <summary>
+    /// Gets the voting overview for the current event cycle.
+    /// </summary>
     [HttpGet("{eventId}/voting/overview")]
     public async Task<ActionResult<EventVotingOverviewDto>> GetVotingOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Voting,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
         var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
         var activeCategories = await LoadActiveCategoriesAsync(eventId, ct);
         var submittedVoteCount = await CountSubmittedVotesAsync(
-            access.UserId,
+            userAccess.UserId,
             activeCategories.Select(x => x.Id).ToList(),
             ct);
 
@@ -489,16 +583,19 @@ public sealed partial class EventsController
         ));
     }
 
+    /// <summary>
+    /// Gets the Secret Santa overview, including assigned user and wishlist counts.
+    /// </summary>
     [HttpGet("{eventId}/secret-santa/overview")]
     public async Task<ActionResult<EventSecretSantaOverviewDto>> GetSecretSantaOverview([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.SecretSanta,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
-        var myWishlistItemCount = await CountWishlistItemsAsync(eventId, access.UserId, ct);
+        var myWishlistItemCount = await CountWishlistItemsAsync(eventId, userAccess.UserId, ct);
         var latestDraw = await GetLatestSecretSantaDrawAsync(eventId, ct);
         if (latestDraw is null)
         {
@@ -515,9 +612,9 @@ public sealed partial class EventsController
 
         var assignment = await _db.SecretSantaAssignments
             .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.DrawId == latestDraw.Id && x.GiverUserId == access.UserId, ct);
+            .FirstOrDefaultAsync(x => x.DrawId == latestDraw.Id && x.GiverUserId == userAccess.UserId, ct);
 
-        EventUserDto? assignedUser = null;
+        EventUserDto? assignedUserDto = null;
         var assignedWishlistItemCount = 0;
 
         if (assignment is not null)
@@ -535,7 +632,7 @@ public sealed partial class EventsController
                     .FirstOrDefaultAsync(ct)
                     ?? EventRoles.User;
 
-                assignedUser = new EventUserDto(receiver.Id, GetUserName(receiver), role);
+                assignedUserDto = new EventUserDto(receiver.Id, GetUserName(receiver), role);
                 assignedWishlistItemCount = await CountWishlistItemsAsync(eventId, receiver.Id, ct);
             }
         }
@@ -543,14 +640,17 @@ public sealed partial class EventsController
         return Ok(new EventSecretSantaOverviewDto(
             eventId,
             true,
-            assignment is not null && assignedUser is not null,
+            assignment is not null && assignedUserDto is not null,
             latestDraw.EventCode,
-            assignedUser,
+            assignedUserDto,
             assignedWishlistItemCount,
             myWishlistItemCount
         ));
     }
 
+    /// <summary>
+    /// Retrieves a paged list of feed posts for the event. Results are cached for 30 seconds.
+    /// </summary>
     [HttpGet("{eventId}/feed/posts")]
     public async Task<ActionResult<PagedResult<EventFeedPostFullDto>>> GetPosts(
         [FromRoute] string eventId,
@@ -558,145 +658,121 @@ public sealed partial class EventsController
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
 
-        take = Math.Clamp(take, 1, 200);
-        skip = Math.Max(0, skip);
+        var validatedTake = Math.Clamp(take, 1, 200);
+        var validatedSkip = Math.Max(0, skip);
 
-        var total = await _db.HubPosts
-            .CountAsync(x => x.EventId == eventId, ct);
+        var cacheKey = $"FeedPosts_{eventId}_{userAccess.UserId}_{validatedSkip}_{validatedTake}";
+        if (_cache.TryGetValue(cacheKey, out PagedResult<EventFeedPostFullDto>? cachedFeedResult))
+        {
+            return Ok(cachedFeedResult);
+        }
 
-        var posts = await _db.HubPosts
+        var feedPostsQuery = _db.HubPosts
             .AsNoTracking()
-            .Where(x => x.EventId == eventId)
+            .Where(x => x.EventId == eventId);
+
+        var totalPostsCountInEvent = await feedPostsQuery.CountAsync(ct);
+
+        var postsWithMetadata = await feedPostsQuery
             .OrderByDescending(x => x.IsPinned)
             .ThenByDescending(x => x.CreatedAtUtc)
-            .Skip(skip)
-            .Take(take)
+            .Skip(validatedSkip)
+            .Take(validatedTake)
+            .Select(x => new
+            {
+                Post = x,
+                AuthorName = _db.Users
+                    .Where(u => u.Id == x.AuthorUserId)
+                    .Select(u => u.DisplayName ?? u.Email)
+                    .FirstOrDefault(),
+                LikeCount = _db.HubPostReactions.Count(r => r.PostId == x.Id && r.Emoji == "❤️"),
+                CommentCount = _db.HubPostComments.Count(c => c.PostId == x.Id),
+                DownvoteCount = _db.HubPostDownvotes.Count(d => d.PostId == x.Id),
+                MyReactionsOnPost = _db.HubPostReactions
+                    .Where(r => r.PostId == x.Id && r.UserId == userAccess.UserId)
+                    .Select(r => r.Emoji)
+                    .Distinct()
+                    .ToList(),
+                IsLikedByMe = _db.HubPostReactions.Any(r => r.PostId == x.Id && r.UserId == userAccess.UserId && r.Emoji == "❤️"),
+                IsDownvotedByMe = _db.HubPostDownvotes.Any(d => d.PostId == x.Id && d.UserId == userAccess.UserId),
+                MediaUrlsForPost = _db.HubPostMedia
+                    .Where(m => m.PostId == x.Id)
+                    .OrderBy(m => m.UploadedAtUtc)
+                    .Select(m => m.Url)
+                    .ToList()
+            })
+            .AsSplitQuery()
             .ToListAsync(ct);
 
-        var postIds = posts.Select(post => post.Id).ToList();
+        var feedPostDtos = postsWithMetadata.Select(x => ToEventFeedPostFullDto(
+            x.Post,
+            x.AuthorName ?? "Unknown",
+            MediaUrlFormatter.Collect(x.Post.MediaUrl, x.Post.MediaUrlsJson, x.MediaUrlsForPost),
+            x.LikeCount,
+            x.CommentCount,
+            x.DownvoteCount,
+            new Dictionary<string, int>(), 
+            x.MyReactionsOnPost,
+            x.IsLikedByMe,
+            x.IsDownvotedByMe,
+            null
+        )).ToList();
 
-        // Load media
-        var mediaByPostId = await _db.HubPostMedia
-            .AsNoTracking()
-            .Where(x => x.PostId != null && postIds.Contains(x.PostId))
-            .OrderBy(x => x.UploadedAtUtc)
-            .ToListAsync(ct);
+        var feedPagedResult = new PagedResult<EventFeedPostFullDto>(feedPostDtos, totalPostsCountInEvent, validatedSkip, validatedTake, (validatedSkip + validatedTake) < totalPostsCountInEvent);
+        _cache.Set(cacheKey, feedPagedResult, TimeSpan.FromSeconds(30));
 
-        // Load authors
-        var authorIds = posts.Select(x => x.AuthorUserId).Distinct().ToList();
-        var authors = await _db.Users
-            .AsNoTracking()
-            .Where(x => authorIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, ct);
-
-        // Load reaction counts (grouped by emoji)
-        var allReactions = await _db.HubPostReactions
-            .AsNoTracking()
-            .Where(x => postIds.Contains(x.PostId))
-            .ToListAsync(ct);
-
-        var reactionCountsByPost = allReactions
-            .GroupBy(r => r.PostId)
-            .ToDictionary(
-                g => g.Key,
-                g => g.GroupBy(r => r.Emoji)
-                    .ToDictionary(x => x.Key, x => x.Count())
-            );
-
-        var myReactionsByPost = access.UserId == Guid.Empty
-            ? new Dictionary<string, List<string>>()
-            : allReactions
-                .Where(r => r.UserId == access.UserId)
-                .GroupBy(r => r.PostId)
-                .ToDictionary(g => g.Key, g => g.Select(r => r.Emoji).Distinct().ToList());
-
-        // Load comment counts
-        var commentCounts = await _db.HubPostComments
-            .AsNoTracking()
-            .Where(x => postIds.Contains(x.PostId))
-            .GroupBy(x => x.PostId)
-            .ToDictionaryAsync(g => g.Key, g => g.Count(), ct);
-
-        // Load like counts (heart reaction)
-        var likeCounts = allReactions
-            .Where(r => r.Emoji == "❤️")
-            .GroupBy(r => r.PostId)
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        // Build DTOs (downvotes not supported yet)
-        var likedByMe = access.UserId == Guid.Empty
-            ? new HashSet<string>()
-            : new HashSet<string>(
-                allReactions
-                    .Where(x => x.UserId == access.UserId && x.Emoji == "❤️")
-                    .Select(x => x.PostId)
-            );
-
-        // Build DTOs (downvotes not supported yet)
-        var dtos = posts.Select(x =>
-        {
-            var author = authors.TryGetValue(x.AuthorUserId, out var value) ? value : null;
-            var authorName = author is null ? "Unknown" : GetUserName(author);
-            
-            var mediaUrls = MediaUrlFormatter.Collect(
-                x.MediaUrl,
-                x.MediaUrlsJson,
-                mediaByPostId
-                    .Where(media => media.PostId == x.Id)
-                    .Select(media => media.Url)
-            );
-
-            return ToEventFeedPostFullDto(
-                x,
-                authorName,
-                mediaUrls,
-                likeCounts.GetValueOrDefault(x.Id, 0),
-                commentCounts.GetValueOrDefault(x.Id, 0),
-                downvoteCount: 0, // Downvotes not supported yet
-                reactionCountsByPost.GetValueOrDefault(x.Id) ?? new Dictionary<string, int>(),
-                myReactionsByPost.GetValueOrDefault(x.Id) ?? new List<string>(),
-                likedByMe.Contains(x.Id),
-                downvotedByMe: false, // Downvotes not supported yet
-                poll: null // Poll support can be added later
-            );
-        }).ToList();
-
-        return new PagedResult<EventFeedPostFullDto>(dtos, total, skip, take, (skip + take) < total);
+        return Ok(feedPagedResult);
     }
 
+    /// <summary>
+    /// Creates a new text or image post in the event feed.
+    /// </summary>
     [HttpPost("{eventId}/feed/posts")]
-    public async Task<ActionResult<EventFeedPostDto>> CreatePost([FromRoute] string eventId, [FromBody] CreateEventPostRequest request, CancellationToken ct)
+    public async Task<ActionResult<EventFeedPostDto>> CreatePost([FromRoute] string eventId, [FromBody] CreateEventPostRequest createRequest, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
-        if (error is not null) return error;
-        if (string.IsNullOrWhiteSpace(request.Content)) return BadRequest("Content is required.");
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
+        if (accessError is not null) return accessError;
+        if (string.IsNullOrWhiteSpace(createRequest.Content)) return BadRequest("Content is required.");
 
-        var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == access.UserId, ct);
-        if (user is null) return Unauthorized();
+        var currentAuthor = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == userAccess.UserId, ct);
+        if (currentAuthor is null) return Unauthorized();
 
-        var mediaUrls = MediaUrlFormatter.Collect(request.ImageUrl, null);
+        var collectedMediaUrlsForNewPost = MediaUrlFormatter.Collect(createRequest.ImageUrl, null);
 
-        var post = new HubPostEntity
+        var newFeedPost = new HubPostEntity
         {
             Id = Guid.NewGuid().ToString(),
             EventId = eventId,
-            AuthorUserId = access.UserId,
-            Text = request.Content.Trim(),
-            MediaUrl = mediaUrls.FirstOrDefault(),
-            MediaUrlsJson = JsonSerializer.Serialize(mediaUrls),
+            AuthorUserId = userAccess.UserId,
+            Text = createRequest.Content.Trim(),
+            MediaUrl = collectedMediaUrlsForNewPost.FirstOrDefault(),
+            MediaUrlsJson = JsonSerializer.Serialize(collectedMediaUrlsForNewPost),
             CreatedAtUtc = DateTime.UtcNow,
             IsPinned = false
         };
 
-        _db.HubPosts.Add(post);
+        _db.HubPosts.Add(newFeedPost);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(ToEventFeedPostDto(post, GetUserName(user), mediaUrls));
+        var createdFeedPostDto = ToEventFeedPostDto(newFeedPost, GetUserName(currentAuthor), collectedMediaUrlsForNewPost);
+        
+        await NotifyPostCreatedAsync(eventId, createdFeedPostDto, ct);
+
+        return Ok(createdFeedPostDto);
     }
 
+    private async Task NotifyPostCreatedAsync(string eventId, EventFeedPostDto postDto, CancellationToken ct)
+    {
+        await _hub.Clients.Group($"event_{eventId}")
+            .SendAsync("PostCreated", postDto, ct);
+    }
+
+    /// <summary>
+    /// Retrieves a paged list of award categories. Results are cached for 60 seconds.
+    /// </summary>
     [HttpGet("{eventId}/categories")]
     public async Task<ActionResult<PagedResult<EventCategoryDto>>> GetCategories(
         [FromRoute] string eventId,
@@ -704,19 +780,25 @@ public sealed partial class EventsController
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var (_, _, error) = await RequireEventModuleAccessAsync(
+        var (_, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Categories,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
         take = Math.Clamp(take, 1, 200);
         skip = Math.Max(0, skip);
 
-        var total = await _db.AwardCategories
+        var cacheKey = $"Categories_{eventId}_{skip}_{take}";
+        if (_cache.TryGetValue(cacheKey, out PagedResult<EventCategoryDto>? cachedCategories))
+        {
+            return Ok(cachedCategories);
+        }
+
+        var totalCategoriesCount = await _db.AwardCategories
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var categories = await _db.AwardCategories
+        var awardCategoriesList = await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderBy(x => x.SortOrder)
@@ -724,20 +806,27 @@ public sealed partial class EventsController
             .Take(take)
             .ToListAsync(ct);
 
-        var dtos = categories.Select(ToEventCategoryDto).ToList();
-        return new PagedResult<EventCategoryDto>(dtos, total, skip, take, (skip + take) < total);
+        var categoryDtosList = awardCategoriesList.Select(ToEventCategoryDto).ToList();
+        var pagedCategoriesResult = new PagedResult<EventCategoryDto>(categoryDtosList, totalCategoriesCount, skip, take, (skip + take) < totalCategoriesCount);
+        
+        _cache.Set(cacheKey, pagedCategoriesResult, TimeSpan.FromSeconds(60));
+
+        return Ok(pagedCategoriesResult);
     }
 
+    /// <summary>
+    /// Creates a new award category for the event.
+    /// </summary>
     [HttpPost("{eventId}/categories")]
     public async Task<ActionResult<EventCategoryDto>> CreateCategory([FromRoute] string eventId, [FromBody] CreateEventCategoryRequest request, CancellationToken ct)
     {
-        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
-        if (error is not null) return error;
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (accessError is not null) return accessError;
         if (string.IsNullOrWhiteSpace(request.Title)) return BadRequest("Title is required.");
         if (!Enum.TryParse<AwardCategoryKind>(request.Kind, true, out var kind))
             return BadRequest("Invalid kind.");
 
-        var category = await CreateCategoryEntityAsync(
+        var newCategoryEntity = await CreateCategoryEntityAsync(
             eventId,
             request.Title,
             request.Description,
@@ -745,79 +834,88 @@ public sealed partial class EventsController
             kind,
             ct);
 
-        return Ok(ToEventCategoryDto(category));
+        return Ok(ToEventCategoryDto(newCategoryEntity));
     }
 
+    /// <summary>
+    /// Retrieves the voting board, including all active categories and member's current selections.
+    /// </summary>
     [HttpGet("{eventId}/voting")]
     public async Task<ActionResult<EventVotingBoardDto>> GetVotingBoard([FromRoute] string eventId, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Voting,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
-        var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
+        var cacheKey = $"VotingBoard_{eventId}_{userAccess.UserId}";
+        if (_cache.TryGetValue(cacheKey, out EventVotingBoardDto? cachedVotingBoard))
+        {
+            return Ok(cachedVotingBoard);
+        }
 
-        var categories = await LoadActiveCategoriesAsync(eventId, ct);
-        var categoryIds = categories.Select(x => x.Id).ToList();
+        var activeVotingPhaseEntity = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
+        var eventMemberDirectory = await LoadEventMemberDirectoryAsync(eventId, ct);
 
-        var nominees = await _db.Nominees
+        var approvedNomineesList = await _db.Nominees
             .AsNoTracking()
-            .Where(x =>
-                x.EventId == eventId
-                && x.Status == ProposalStatus.Approved
-                && x.CategoryId != null
-                && categoryIds.Contains(x.CategoryId))
+            .Where(x => x.EventId == eventId && x.Status == ProposalStatus.Approved)
             .OrderBy(x => x.Title)
+            .Select(n => new { n.Id, n.CategoryId, n.Title })
             .ToListAsync(ct);
 
-        var directory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var members = directory.Members;
-        var users = directory.UsersById;
+        var nomineesByCategoryId = approvedNomineesList
+            .GroupBy(n => n.CategoryId)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
-        var nomineeVotes = await _db.Votes
+        var userNomineeVotesMap = await _db.Votes
             .AsNoTracking()
-            .Where(x => x.UserId == access.UserId && categoryIds.Contains(x.CategoryId))
+            .Where(v => v.UserId == userAccess.UserId && _db.AwardCategories.Any(c => c.Id == v.CategoryId && c.EventId == eventId))
+            .Select(v => new { v.CategoryId, v.NomineeId })
             .ToDictionaryAsync(x => x.CategoryId, x => x.NomineeId, ct);
 
-        var userVotes = await _db.UserVotes
+        var userMemberVotesMap = await _db.UserVotes
             .AsNoTracking()
-            .Where(x => x.VoterUserId == access.UserId && categoryIds.Contains(x.CategoryId))
-            .ToDictionaryAsync(x => x.CategoryId, x => x.TargetUserId.ToString(), ct);
+            .Where(v => v.VoterUserId == userAccess.UserId && _db.AwardCategories.Any(c => c.Id == v.CategoryId && c.EventId == eventId))
+            .Select(v => new { v.CategoryId, v.TargetUserId })
+            .ToDictionaryAsync(x => x.CategoryId, x => x.TargetUserId, ct);
 
-        var categoryDtos = categories.Select(category =>
+        var activeAwardCategories = await _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId && x.IsActive)
+            .OrderBy(x => x.SortOrder)
+            .ToListAsync(ct);
+
+        var votingCategoryDtos = activeAwardCategories.Select(category =>
         {
-            List<EventVoteOptionDto> options;
-            string? myOptionId;
+            List<EventVoteOptionDto> voteOptionsList;
+            string? mySelectionId;
 
             if (category.Kind == AwardCategoryKind.UserVote)
             {
-                options = members
-                    .Where(x => users.ContainsKey(x.UserId))
-                    .OrderByDescending(x => x.Role == EventRoles.Admin)
-                    .ThenBy(x => GetUserName(users[x.UserId]))
-                    .Select(x => new EventVoteOptionDto(
-                        x.UserId.ToString(),
+                voteOptionsList = eventMemberDirectory.Members
+                    .Where(m => eventMemberDirectory.UsersById.ContainsKey(m.UserId))
+                    .OrderByDescending(m => m.Role == EventRoles.Admin)
+                    .ThenBy(m => GetUserName(eventMemberDirectory.UsersById[m.UserId]))
+                    .Select(m => new EventVoteOptionDto(
+                        m.UserId.ToString(),
                         category.Id,
-                        GetUserName(users[x.UserId])
+                        GetUserName(eventMemberDirectory.UsersById[m.UserId])
                     ))
                     .ToList();
 
-                myOptionId = userVotes.TryGetValue(category.Id, out var selectedUserId)
-                    ? selectedUserId
+                mySelectionId = userMemberVotesMap.TryGetValue(category.Id, out var targetUserId) && targetUserId != Guid.Empty 
+                    ? targetUserId.ToString() 
                     : null;
             }
             else
             {
-                options = nominees
-                    .Where(x => x.CategoryId == category.Id)
-                    .Select(x => new EventVoteOptionDto(x.Id, category.Id, x.Title))
-                    .ToList();
+                voteOptionsList = nomineesByCategoryId.TryGetValue(category.Id, out var categoryNominees)
+                    ? categoryNominees.Select(n => new EventVoteOptionDto(n.Id, category.Id, n.Title)).ToList()
+                    : new List<EventVoteOptionDto>();
 
-                myOptionId = nomineeVotes.TryGetValue(category.Id, out var selectedNomineeId)
-                    ? selectedNomineeId
-                    : null;
+                mySelectionId = userNomineeVotesMap.TryGetValue(category.Id, out var nomineeId) ? nomineeId : null;
             }
 
             return new EventVotingCategoryDto(
@@ -827,84 +925,104 @@ public sealed partial class EventsController
                 category.Kind.ToString(),
                 category.Description,
                 category.VoteQuestion,
-                options,
-                myOptionId
+                voteOptionsList,
+                mySelectionId
             );
         }).ToList();
 
-        return Ok(new EventVotingBoardDto(
+        var fullVotingBoard = new EventVotingBoardDto(
             eventId,
-            votingPhase?.Id,
-            IsPhaseOpen(votingPhase),
-            categoryDtos
-        ));
+            activeVotingPhaseEntity?.Id,
+            IsPhaseOpen(activeVotingPhaseEntity),
+            votingCategoryDtos
+        );
+
+        _cache.Set(cacheKey, fullVotingBoard, TimeSpan.FromSeconds(30));
+
+        return Ok(fullVotingBoard);
     }
 
+    /// <summary>
+    /// Casts or updates a vote for an award category.
+    /// </summary>
     [HttpPost("{eventId}/votes")]
-    public async Task<ActionResult<EventVoteDto>> CastVote([FromRoute] string eventId, [FromBody] CreateEventVoteRequest request, CancellationToken ct)
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("strict")]
+    public async Task<ActionResult<EventVoteDto>> CastVote([FromRoute] string eventId, [FromBody] CreateEventVoteRequest voteRequest, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Voting,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
-        var votingPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
-        if (!IsPhaseOpen(votingPhase)) return BadRequest("Voting is closed.");
+        var activeVotingPhaseEntity = await GetActivePhaseAsync(eventId, EventPhaseTypes.Voting, ct);
+        if (!IsPhaseOpen(activeVotingPhaseEntity)) return BadRequest("Voting is closed.");
 
-        var category = await _db.AwardCategories
+        var targetAwardCategory = await _db.AwardCategories
             .FirstOrDefaultAsync(
-                x => x.Id == request.CategoryId && x.EventId == eventId && x.IsActive,
+                x => x.Id == voteRequest.CategoryId && x.EventId == eventId && x.IsActive,
                 ct);
 
-        if (category is null) return BadRequest("Invalid category.");
+        if (targetAwardCategory is null) return BadRequest("Invalid category.");
 
-        if (category.Kind == AwardCategoryKind.UserVote)
+        if (targetAwardCategory.Kind == AwardCategoryKind.UserVote)
         {
-            if (!Guid.TryParse(request.OptionId, out var targetUserId))
-                return BadRequest("Invalid option.");
-
-            var isMember = await _db.EventMembers
-                .AsNoTracking()
-                .AnyAsync(x => x.EventId == eventId && x.UserId == targetUserId, ct);
-
-            if (!isMember) return BadRequest("Invalid option.");
-
-            var existingUserVote = await _db.UserVotes
-                .FirstOrDefaultAsync(
-                    x => x.CategoryId == category.Id && x.VoterUserId == access.UserId,
-                    ct);
-
-            if (existingUserVote is null)
-            {
-                existingUserVote = new UserVoteEntity
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    CategoryId = category.Id,
-                    VoterUserId = access.UserId,
-                    TargetUserId = targetUserId,
-                    UpdatedAtUtc = DateTime.UtcNow
-                };
-                _db.UserVotes.Add(existingUserVote);
-            }
-            else
-            {
-                existingUserVote.TargetUserId = targetUserId;
-                existingUserVote.UpdatedAtUtc = DateTime.UtcNow;
-            }
-
-            await _db.SaveChangesAsync(ct);
-
-            return Ok(new EventVoteDto(
-                existingUserVote.Id,
-                existingUserVote.VoterUserId,
-                existingUserVote.CategoryId,
-                existingUserVote.TargetUserId.ToString(),
-                votingPhase!.Id
-            ));
+            return await CastUserVoteAsync(eventId, userAccess.UserId, targetAwardCategory, voteRequest, ct);
         }
 
-        var nominee = await _db.Nominees
+        return await CastNomineeVoteAsync(eventId, userAccess.UserId, targetAwardCategory, voteRequest, ct);
+    }
+
+    private async Task<ActionResult<EventVoteDto>> CastUserVoteAsync(string eventId, Guid userId, AwardCategoryEntity category, CreateEventVoteRequest request, CancellationToken ct)
+    {
+        if (!Guid.TryParse(request.OptionId, out var targetUserId))
+            return BadRequest("Invalid option.");
+
+        var isUserMemberOfEvent = await _db.EventMembers
+            .AsNoTracking()
+            .AnyAsync(x => x.EventId == eventId && x.UserId == targetUserId, ct);
+
+        if (!isUserMemberOfEvent) return BadRequest("Invalid option.");
+
+        var existingUserVoteEntity = await _db.UserVotes
+            .FirstOrDefaultAsync(
+                x => x.CategoryId == category.Id && x.VoterUserId == userId,
+                ct);
+
+        if (existingUserVoteEntity is null)
+        {
+            existingUserVoteEntity = new UserVoteEntity
+            {
+                Id = Guid.NewGuid().ToString(),
+                CategoryId = category.Id,
+                VoterUserId = userId,
+                TargetUserId = targetUserId,
+                UpdatedAtUtc = DateTime.UtcNow
+            };
+            _db.UserVotes.Add(existingUserVoteEntity);
+        }
+        else
+        {
+            existingUserVoteEntity.TargetUserId = targetUserId;
+            existingUserVoteEntity.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        await NotifyVoteCastAsync(eventId, category.Id, request.OptionId, ct);
+
+        return Ok(new EventVoteDto(
+            existingUserVoteEntity.Id,
+            existingUserVoteEntity.VoterUserId,
+            existingUserVoteEntity.CategoryId,
+            existingUserVoteEntity.TargetUserId.ToString(),
+            existingUserVoteEntity.UpdatedAtUtc
+        ));
+    }
+
+    private async Task<ActionResult<EventVoteDto>> CastNomineeVoteAsync(string eventId, Guid userId, AwardCategoryEntity category, CreateEventVoteRequest request, CancellationToken ct)
+    {
+        var approvedNomineeEntity = await _db.Nominees
             .AsNoTracking()
             .FirstOrDefaultAsync(x =>
                 x.Id == request.OptionId
@@ -912,61 +1030,74 @@ public sealed partial class EventsController
                 && x.CategoryId == category.Id
                 && x.Status == ProposalStatus.Approved, ct);
 
-        if (nominee is null) return BadRequest("Invalid option.");
+        if (approvedNomineeEntity is null) return BadRequest("Invalid option.");
 
-        var existingVote = await _db.Votes
-            .FirstOrDefaultAsync(x => x.CategoryId == category.Id && x.UserId == access.UserId, ct);
+        var existingNomineeVoteEntity = await _db.Votes
+            .FirstOrDefaultAsync(x => x.CategoryId == category.Id && x.UserId == userId, ct);
 
-        if (existingVote is null)
+        if (existingNomineeVoteEntity is null)
         {
-            existingVote = new VoteEntity
+            existingNomineeVoteEntity = new VoteEntity
             {
                 Id = Guid.NewGuid().ToString(),
                 CategoryId = category.Id,
-                NomineeId = nominee.Id,
-                UserId = access.UserId,
+                NomineeId = approvedNomineeEntity.Id,
+                UserId = userId,
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow
             };
-            _db.Votes.Add(existingVote);
+            _db.Votes.Add(existingNomineeVoteEntity);
         }
         else
         {
-            existingVote.NomineeId = nominee.Id;
-            existingVote.UpdatedAtUtc = DateTime.UtcNow;
+            existingNomineeVoteEntity.NomineeId = approvedNomineeEntity.Id;
+            existingNomineeVoteEntity.UpdatedAtUtc = DateTime.UtcNow;
         }
 
         await _db.SaveChangesAsync(ct);
 
+        await NotifyVoteCastAsync(eventId, category.Id, request.OptionId, ct);
+
         return Ok(new EventVoteDto(
-            existingVote.Id,
-            existingVote.UserId,
-            existingVote.CategoryId,
-            existingVote.NomineeId,
-            votingPhase!.Id
+            existingNomineeVoteEntity.Id,
+            existingNomineeVoteEntity.UserId,
+            existingNomineeVoteEntity.CategoryId,
+            existingNomineeVoteEntity.NomineeId,
+            existingNomineeVoteEntity.UpdatedAtUtc
         ));
     }
 
+    private async Task NotifyVoteCastAsync(string eventId, string categoryId, string optionId, CancellationToken ct)
+    {
+        await _hub.Clients.Group($"event_{eventId}")
+            .SendAsync("VoteCast", new { categoryId, optionId }, ct);
+    }
+
+    /// <summary>
+    /// Lists all category proposals for the event (paginated).
+    /// </summary>
     [HttpGet("{eventId}/proposals")]
+    [ProducesResponseType(typeof(PagedResult<EventProposalDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<PagedResult<EventProposalDto>>> GetProposals(
         [FromRoute] string eventId,
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var (_, _, error) = await RequireEventModuleAccessAsync(
+        var (_, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Categories,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
         take = Math.Clamp(take, 1, 200);
         skip = Math.Max(0, skip);
 
-        var total = await _db.CategoryProposals
+        var totalProposalsCount = await _db.CategoryProposals
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var dtos = (await _db.CategoryProposals
+        var proposalDtosList = (await _db.CategoryProposals
         .AsNoTracking()
         .Where(x => x.EventId == eventId)
         .OrderByDescending(x => x.CreatedAtUtc)
@@ -976,27 +1107,30 @@ public sealed partial class EventsController
         .Select(ToEventProposalDto)
         .ToList();
 
-        return new PagedResult<EventProposalDto>(dtos, total, skip, take, (skip + take) < total);
+        return new PagedResult<EventProposalDto>(proposalDtosList, totalProposalsCount, skip, take, (skip + take) < totalProposalsCount);
     }
 
+    /// <summary>
+    /// Submits a new category proposal.
+    /// </summary>
     [HttpPost("{eventId}/proposals")]
     public async Task<ActionResult<EventProposalDto>> CreateProposal([FromRoute] string eventId, [FromBody] CreateEventProposalRequest request, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Categories,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
         if (string.IsNullOrWhiteSpace(request.Name)) return BadRequest("Name is required.");
 
-        var phase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Proposals, ct);
-        if (!IsPhaseOpen(phase)) return BadRequest("Proposals are closed.");
+        var activeProposalsPhaseEntity = await GetActivePhaseAsync(eventId, EventPhaseTypes.Proposals, ct);
+        if (!IsPhaseOpen(activeProposalsPhaseEntity)) return BadRequest("Proposals are closed.");
 
-        var proposal = new CategoryProposalEntity
+        var newCategoryProposal = new CategoryProposalEntity
         {
             Id = Guid.NewGuid().ToString(),
             EventId = eventId,
-            ProposedByUserId = access.UserId,
+            ProposedByUserId = userAccess.UserId,
             Name = request.Name.Trim(),
             Description = string.IsNullOrWhiteSpace(request.Description)
                 ? null
@@ -1005,34 +1139,40 @@ public sealed partial class EventsController
             CreatedAtUtc = DateTime.UtcNow
         };
 
-        _db.CategoryProposals.Add(proposal);
+        _db.CategoryProposals.Add(newCategoryProposal);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(ToEventProposalDto(proposal));
+        return Ok(ToEventProposalDto(newCategoryProposal));
     }
 
+    /// <summary>
+    /// Updates an existing category proposal (admin only).
+    /// </summary>
     [HttpPatch("{eventId}/proposals/{proposalId}")]
     public async Task<ActionResult<EventProposalDto>> UpdateProposal([FromRoute] string eventId, [FromRoute] string proposalId, [FromBody] UpdateEventProposalRequest request, CancellationToken ct)
     {
-        var (_, error) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
-        if (error is not null) return error;
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
+        if (accessError is not null) return accessError;
 
-        var proposal = await _db.CategoryProposals
+        var targetCategoryProposal = await _db.CategoryProposals
             .FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
 
-        if (proposal is null) return NotFound();
+        if (targetCategoryProposal is null) return NotFound();
         if (string.IsNullOrWhiteSpace(request.Status)) return BadRequest("Status is required.");
 
-        var status = NormalizeProposalStatus(request.Status);
-        if (status is null)
+        var normalizedProposalStatus = NormalizeProposalStatus(request.Status);
+        if (normalizedProposalStatus is null)
             return BadRequest("Invalid status.");
 
-        await ApplyCategoryProposalStatusAsync(proposal, eventId, status, ct);
+        await ApplyCategoryProposalStatusAsync(targetCategoryProposal, eventId, normalizedProposalStatus, ct);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(ToEventProposalDto(proposal));
+        return Ok(ToEventProposalDto(targetCategoryProposal));
     }
 
+    /// <summary>
+    /// Retrieves a paged list of wishlist items for the event.
+    /// </summary>
     [HttpGet("{eventId}/wishlist")]
     public async Task<ActionResult<PagedResult<EventWishlistItemDto>>> GetWishlist(
         [FromRoute] string eventId,
@@ -1040,19 +1180,19 @@ public sealed partial class EventsController
         [FromQuery] int take = 50,
         CancellationToken ct = default)
     {
-        var (_, _, error) = await RequireEventModuleAccessAsync(
+        var (_, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Wishlist,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
 
         take = Math.Clamp(take, 1, 200);
         skip = Math.Max(0, skip);
 
-        var total = await _db.WishlistItems
+        var totalWishlistItemsCount = await _db.WishlistItems
             .CountAsync(x => x.EventId == eventId, ct);
 
-        var dtos = (await _db.WishlistItems
+        var wishlistDtosList = (await _db.WishlistItems
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderByDescending(x => x.UpdatedAtUtc)
@@ -1062,24 +1202,27 @@ public sealed partial class EventsController
             .Select(ToEventWishlistItemDto)
             .ToList();
 
-        return new PagedResult<EventWishlistItemDto>(dtos, total, skip, take, (skip + take) < total);
+        return new PagedResult<EventWishlistItemDto>(wishlistDtosList, totalWishlistItemsCount, skip, take, (skip + take) < totalWishlistItemsCount);
     }
 
+    /// <summary>
+    /// Adds a new item to the member's wishlist for the event.
+    /// </summary>
     [HttpPost("{eventId}/wishlist")]
     public async Task<ActionResult<EventWishlistItemDto>> CreateWishlistItem([FromRoute] string eventId, [FromBody] CreateEventWishlistItemRequest request, CancellationToken ct)
     {
-        var (access, _, error) = await RequireEventModuleAccessAsync(
+        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(
             eventId,
             EventModuleKey.Wishlist,
             ct);
-        if (error is not null) return error;
+        if (accessError is not null) return accessError;
         if (string.IsNullOrWhiteSpace(request.Title)) return BadRequest("Title is required.");
 
-        var item = new WishlistItemEntity
+        var newWishlistItem = new WishlistItemEntity
         {
             Id = Guid.NewGuid().ToString(),
             EventId = eventId,
-            UserId = access.UserId,
+            UserId = userAccess.UserId,
             Title = request.Title.Trim(),
             Url = string.IsNullOrWhiteSpace(request.Link) ? null : request.Link.Trim(),
             Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
@@ -1087,9 +1230,9 @@ public sealed partial class EventsController
             UpdatedAtUtc = DateTime.UtcNow
         };
 
-        _db.WishlistItems.Add(item);
+        _db.WishlistItems.Add(newWishlistItem);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(ToEventWishlistItemDto(item));
+        return Ok(ToEventWishlistItemDto(newWishlistItem));
     }
 }

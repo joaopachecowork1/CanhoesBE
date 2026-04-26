@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
+using Canhoes.Api.DTOs;
 
 namespace Canhoes.Api.Controllers;
 
@@ -20,6 +21,12 @@ public sealed class UsersController : ControllerBase
         _db = db;
     }
 
+    /// <summary>
+    /// Retrieves the currently authenticated user profile.
+    /// If the user does not exist in the local database, a profile is automatically created.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The user profile information.</returns>
     [HttpGet("me")]
     public async Task<ActionResult<MeDto>> Me(CancellationToken ct)
     {
@@ -28,44 +35,8 @@ public sealed class UsersController : ControllerBase
             return Ok(new MeDto(cachedUser));
         }
 
-        var user = await ResolveCurrentUserAsync(HttpContext.User, ct);
-        return user is null ? Unauthorized() : Ok(new MeDto(user));
-    }
-
-    [HttpGet("users")]
-    public async Task<ActionResult<PagedResult<PublicUserDto>>> ListUsers(
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 50,
-        CancellationToken ct = default)
-    {
-        take = Math.Clamp(take, 1, 200);
-        skip = Math.Max(0, skip);
-
-        var total = await _db.Users.CountAsync(ct);
-        var list = await _db.Users.AsNoTracking()
-            .OrderBy(u => u.DisplayName)
-            .ThenBy(u => u.Email)
-            .Skip(skip)
-            .Take(take)
-            .ToListAsync(ct);
-
-        var items = list.Select(u => new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin)).ToList();
-        return new PagedResult<PublicUserDto>(items, total, skip, take, (skip + take) < total);
-    }
-
-    // Simple admin management (optional; useful for a small private event)
-    [HttpPost("users/{id:guid}/set-admin")]
-    public async Task<ActionResult<PublicUserDto>> SetAdmin([FromRoute] Guid id, [FromQuery] bool isAdmin, CancellationToken ct)
-    {
-        if (!HttpContext.IsAdmin()) return Forbid();
-
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == id, ct);
-        if (user is null) return NotFound();
-
-        user.IsAdmin = isAdmin;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new PublicUserDto(user.Id, user.Email, user.DisplayName, user.IsAdmin));
+        var resolvedUser = await ResolveCurrentUserAsync(HttpContext.User, ct);
+        return resolvedUser is null ? Unauthorized() : Ok(new MeDto(resolvedUser));
     }
 
     private async Task<PublicUserDto?> ResolveCurrentUserAsync(ClaimsPrincipal principal, CancellationToken ct)
@@ -80,17 +51,17 @@ public sealed class UsersController : ControllerBase
             return null;
         }
 
-        var user = await _db.Users.AsNoTracking()
+        var existingUserDto = await _db.Users.AsNoTracking()
             .Where(u => u.ExternalId == externalId || u.Email == email)
             .Select(u => new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin))
             .FirstOrDefaultAsync(ct);
 
-        if (user is not null)
+        if (existingUserDto is not null)
         {
-            return user;
+            return existingUserDto;
         }
 
-        var entity = new UserEntity
+        var newUserEntity = new UserEntity
         {
             Id = Guid.NewGuid(),
             ExternalId = externalId,
@@ -103,9 +74,9 @@ public sealed class UsersController : ControllerBase
             CreatedAt = DateTime.UtcNow
         };
 
-        _db.Users.Add(entity);
+        _db.Users.Add(newUserEntity);
         await _db.SaveChangesAsync(ct);
 
-        return new PublicUserDto(entity.Id, entity.Email, entity.DisplayName, entity.IsAdmin);
+        return new PublicUserDto(newUserEntity.Id, newUserEntity.Email, newUserEntity.DisplayName, newUserEntity.IsAdmin);
     }
 }

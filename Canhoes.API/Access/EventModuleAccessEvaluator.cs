@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
+using Canhoes.Api.DTOs;
 using Microsoft.EntityFrameworkCore;
 
 namespace Canhoes.Api.Access;
@@ -31,100 +32,100 @@ internal sealed record EventModuleAccessSnapshot(
 internal static class EventModuleAccessEvaluator
 {
     public static async Task<EventModuleAccessSnapshot> EvaluateAsync(
-        CanhoesDbContext db,
+        CanhoesDbContext dbContext,
         string eventId,
         Guid userId,
         bool isAdmin,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
-        var state = await GetOrCreateEventStateAsync(db, eventId, ct);
-        var activePhase = await db.EventPhases
+        var eventState = await GetOrCreateEventStateAsync(dbContext, eventId, cancellationToken);
+        var activePhase = await dbContext.EventPhases
             .AsNoTracking()
             .Where(x => x.EventId == eventId && x.IsActive)
             .OrderByDescending(x => x.StartDateUtc)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(cancellationToken);
 
-        return await BuildSnapshotAsync(db, eventId, userId, isAdmin, state, activePhase, ct);
+        return await BuildSnapshotAsync(dbContext, eventId, userId, isAdmin, eventState, activePhase, cancellationToken);
     }
 
     /// <summary>
     /// Overload that reuses already-loaded phases to avoid a duplicate DB query.
     /// </summary>
     public static async Task<EventModuleAccessSnapshot> EvaluateAsync(
-        CanhoesDbContext db,
+        CanhoesDbContext dbContext,
         string eventId,
         Guid userId,
         bool isAdmin,
         List<EventPhaseEntity> phases,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
-        var state = await GetOrCreateEventStateAsync(db, eventId, ct);
+        var eventState = await GetOrCreateEventStateAsync(dbContext, eventId, cancellationToken);
         var activePhase = phases.FirstOrDefault(x => x.IsActive);
 
-        return await BuildSnapshotAsync(db, eventId, userId, isAdmin, state, activePhase, ct);
+        return await BuildSnapshotAsync(dbContext, eventId, userId, isAdmin, eventState, activePhase, cancellationToken);
     }
 
     private static async Task<EventModuleAccessSnapshot> BuildSnapshotAsync(
-        CanhoesDbContext db,
+        CanhoesDbContext dbContext,
         string eventId,
         Guid userId,
         bool isAdmin,
-        CanhoesEventStateEntity state,
+        CanhoesEventStateEntity eventState,
         EventPhaseEntity? activePhase,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
-        var latestDraw = await GetLatestSecretSantaDrawAsync(db, eventId, ct);
-        var hasAssignment = latestDraw is not null
+        var latestSecretSantaDraw = await GetLatestSecretSantaDrawAsync(dbContext, eventId, cancellationToken);
+        var hasSecretSantaAssignment = latestSecretSantaDraw is not null
             && userId != Guid.Empty
-            && await db.SecretSantaAssignments
+            && await dbContext.SecretSantaAssignments
                 .AsNoTracking()
-                .AnyAsync(x => x.DrawId == latestDraw.Id && x.GiverUserId == userId, ct);
+                .AnyAsync(x => x.DrawId == latestSecretSantaDraw.Id && x.GiverUserId == userId, cancellationToken);
 
-        var moduleVisibility = ParseModuleVisibility(state);
+        var moduleVisibility = ParseModuleVisibility(eventState);
         var effectiveModules = BuildModuleVisibility(
             activePhase,
-            latestDraw is not null,
-            hasAssignment,
-            state,
+            latestSecretSantaDraw is not null,
+            hasSecretSantaAssignment,
+            eventState,
             moduleVisibility,
             isAdmin);
 
         return new EventModuleAccessSnapshot(
             eventId,
             activePhase,
-            state,
+            eventState,
             moduleVisibility,
             effectiveModules,
-            latestDraw is not null,
-            hasAssignment);
+            latestSecretSantaDraw is not null,
+            hasSecretSantaAssignment);
     }
 
     public static async Task<CanhoesEventStateEntity> GetOrCreateEventStateAsync(
-        CanhoesDbContext db,
+        CanhoesDbContext dbContext,
         string eventId,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
-        var existingState = await db.CanhoesEventState
-            .FirstOrDefaultAsync(x => x.EventId == eventId, ct);
-        if (existingState is not null) return existingState;
+        var existingEventState = await dbContext.CanhoesEventState
+            .FirstOrDefaultAsync(x => x.EventId == eventId, cancellationToken);
+        if (existingEventState is not null) return existingEventState;
 
         // Optimistic insert with retry on conflict — avoids race condition
         // when multiple requests try to create state simultaneously.
         const int maxRetries = 3;
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            existingState = await db.CanhoesEventState
-                .FirstOrDefaultAsync(x => x.EventId == eventId, ct);
-            if (existingState is not null) return existingState;
+            existingEventState = await dbContext.CanhoesEventState
+                .FirstOrDefaultAsync(x => x.EventId == eventId, cancellationToken);
+            if (existingEventState is not null) return existingEventState;
 
-            var nextId = (await db.CanhoesEventState
+            var nextStateId = (await dbContext.CanhoesEventState
                 .AsNoTracking()
-                .MaxAsync(x => (int?)x.Id, ct) ?? 0) + 1;
+                .MaxAsync(x => (int?)x.Id, cancellationToken) ?? 0) + 1;
             var defaultVisibilityJson = SerializeModuleVisibility(DefaultModuleVisibility());
 
-            var newState = new CanhoesEventStateEntity
+            var newEventState = new CanhoesEventStateEntity
             {
-                Id = nextId,
+                Id = nextStateId,
                 EventId = eventId,
                 Phase = LegacyPhaseNames.Nominations,
                 NominationsVisible = true,
@@ -134,37 +135,37 @@ internal static class EventModuleAccessEvaluator
 
             try
             {
-                db.CanhoesEventState.Add(newState);
-                await db.SaveChangesAsync(ct);
-                return newState;
+                dbContext.CanhoesEventState.Add(newEventState);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return newEventState;
             }
             catch (DbUpdateException)
             {
                 // Another request may have inserted concurrently.
                 // Rollback the current change tracker and retry.
-                db.ChangeTracker.Clear();
+                dbContext.ChangeTracker.Clear();
             }
         }
 
         // Final fallback — one more read after retries exhausted
-        existingState = await db.CanhoesEventState
-            .FirstOrDefaultAsync(x => x.EventId == eventId, ct);
-        if (existingState is not null) return existingState;
+        existingEventState = await dbContext.CanhoesEventState
+            .FirstOrDefaultAsync(x => x.EventId == eventId, cancellationToken);
+        if (existingEventState is not null) return existingEventState;
 
         throw new InvalidOperationException(
             $"Could not create event state for '{eventId}' after {maxRetries} retries.");
     }
 
-    public static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? state)
+    public static EventAdminModuleVisibilityDto ParseModuleVisibility(CanhoesEventStateEntity? eventState)
     {
-        if (string.IsNullOrWhiteSpace(state?.ModuleVisibilityJson))
+        if (string.IsNullOrWhiteSpace(eventState?.ModuleVisibilityJson))
         {
             return DefaultModuleVisibility();
         }
 
         try
         {
-            return JsonSerializer.Deserialize<EventAdminModuleVisibilityDto>(state.ModuleVisibilityJson)
+            return JsonSerializer.Deserialize<EventAdminModuleVisibilityDto>(eventState.ModuleVisibilityJson)
                 ?? DefaultModuleVisibility();
         }
         catch
@@ -173,8 +174,8 @@ internal static class EventModuleAccessEvaluator
         }
     }
 
-    public static string SerializeModuleVisibility(EventAdminModuleVisibilityDto visibility) =>
-        JsonSerializer.Serialize(visibility);
+    public static string SerializeModuleVisibility(EventAdminModuleVisibilityDto moduleVisibility) =>
+        JsonSerializer.Serialize(moduleVisibility);
 
     public static EventAdminModuleVisibilityDto DefaultModuleVisibility() =>
         new(
@@ -189,29 +190,29 @@ internal static class EventModuleAccessEvaluator
             Nominees: true
         );
 
-    public static void ApplyLegacyStateForPhase(CanhoesEventStateEntity state, string phaseType)
+    public static void ApplyLegacyStateForPhase(CanhoesEventStateEntity eventState, string phaseType)
     {
         switch (phaseType)
         {
             case EventPhaseTypes.Draw:
-                state.Phase = LegacyPhaseNames.Locked;
-                state.NominationsVisible = false;
-                state.ResultsVisible = false;
+                eventState.Phase = LegacyPhaseNames.Locked;
+                eventState.NominationsVisible = false;
+                eventState.ResultsVisible = false;
                 break;
             case EventPhaseTypes.Proposals:
-                state.Phase = LegacyPhaseNames.Nominations;
-                state.NominationsVisible = true;
-                state.ResultsVisible = false;
+                eventState.Phase = LegacyPhaseNames.Nominations;
+                eventState.NominationsVisible = true;
+                eventState.ResultsVisible = false;
                 break;
             case EventPhaseTypes.Voting:
-                state.Phase = LegacyPhaseNames.Voting;
-                state.NominationsVisible = false;
-                state.ResultsVisible = false;
+                eventState.Phase = LegacyPhaseNames.Voting;
+                eventState.NominationsVisible = false;
+                eventState.ResultsVisible = false;
                 break;
             case EventPhaseTypes.Results:
-                state.Phase = LegacyPhaseNames.Gala;
-                state.NominationsVisible = false;
-                state.ResultsVisible = true;
+                eventState.Phase = LegacyPhaseNames.Gala;
+                eventState.NominationsVisible = false;
+                eventState.ResultsVisible = true;
                 break;
         }
     }
@@ -220,29 +221,29 @@ internal static class EventModuleAccessEvaluator
         EventPhaseEntity? activePhase,
         bool hasSecretSantaDraw,
         bool hasSecretSantaAssignment,
-        CanhoesEventStateEntity? state,
+        CanhoesEventStateEntity? eventState,
         EventAdminModuleVisibilityDto moduleVisibility,
         bool isAdmin)
     {
-        var legacyPhase = state?.Phase?.Trim().ToLowerInvariant();
-        var nominationsVisible = state?.NominationsVisible ?? false;
-        var resultsVisible = state?.ResultsVisible ?? false;
-        var activeType = activePhase?.Type;
+        var legacyPhaseName = eventState?.Phase?.Trim().ToLowerInvariant();
+        var isNominationsVisible = eventState?.NominationsVisible ?? false;
+        var isResultsVisible = eventState?.ResultsVisible ?? false;
+        var activePhaseType = activePhase?.Type;
 
-        var isDrawPhase = activeType == EventPhaseTypes.Draw;
-        var isProposalPhase = activeType == EventPhaseTypes.Proposals || legacyPhase == LegacyPhaseNames.Nominations;
-        var isVotingPhase = activeType == EventPhaseTypes.Voting || legacyPhase == LegacyPhaseNames.Voting;
+        var isDrawPhase = activePhaseType == EventPhaseTypes.Draw;
+        var isProposalPhase = activePhaseType == EventPhaseTypes.Proposals || legacyPhaseName == LegacyPhaseNames.Nominations;
+        var isVotingPhase = activePhaseType == EventPhaseTypes.Voting || legacyPhaseName == LegacyPhaseNames.Voting;
         var isResultsPhase =
-            activeType == EventPhaseTypes.Results ||
-            legacyPhase == LegacyPhaseNames.Gala ||
-            (legacyPhase == LegacyPhaseNames.Locked && resultsVisible);
+            activePhaseType == EventPhaseTypes.Results ||
+            legacyPhaseName == LegacyPhaseNames.Gala ||
+            (legacyPhaseName == LegacyPhaseNames.Locked && isResultsVisible);
 
-        var proposalModulesVisible = isAdmin || (nominationsVisible && isProposalPhase);
-        var resultsModulesVisible = isAdmin || resultsVisible || isResultsPhase;
-        var baseSecretSantaVisible = isDrawPhase || hasSecretSantaDraw || hasSecretSantaAssignment || isVotingPhase || isResultsPhase;
-        var baseCategoriesVisible = isProposalPhase || isVotingPhase || resultsModulesVisible;
-        var baseVotingVisible = isVotingPhase;
-        var baseNomineesVisible = nominationsVisible || resultsModulesVisible;
+        var isProposalModulesVisible = isAdmin || (isNominationsVisible && isProposalPhase);
+        var isResultsModulesVisible = isAdmin || isResultsVisible || isResultsPhase;
+        var isBaseSecretSantaVisible = isDrawPhase || hasSecretSantaDraw || hasSecretSantaAssignment || isVotingPhase || isResultsPhase;
+        var isBaseCategoriesVisible = isProposalPhase || isVotingPhase || isResultsModulesVisible;
+        var isBaseVotingVisible = isVotingPhase;
+        var isBaseNomineesVisible = isNominationsVisible || isResultsModulesVisible;
 
         if (isAdmin)
         {
@@ -262,71 +263,71 @@ internal static class EventModuleAccessEvaluator
 
         return new EventModulesDto(
             Feed: moduleVisibility.Feed,
-            SecretSanta: moduleVisibility.SecretSanta && baseSecretSantaVisible,
+            SecretSanta: moduleVisibility.SecretSanta && isBaseSecretSantaVisible,
             Wishlist: moduleVisibility.Wishlist,
-            Categories: moduleVisibility.Categories && baseCategoriesVisible,
-            Voting: moduleVisibility.Voting && baseVotingVisible,
-            Gala: moduleVisibility.Gala && resultsModulesVisible,
-            Stickers: moduleVisibility.Stickers && proposalModulesVisible,
-            Measures: moduleVisibility.Measures && proposalModulesVisible,
-            Nominees: moduleVisibility.Nominees && baseNomineesVisible,
+            Categories: moduleVisibility.Categories && isBaseCategoriesVisible,
+            Voting: moduleVisibility.Voting && isBaseVotingVisible,
+            Gala: moduleVisibility.Gala && isResultsModulesVisible,
+            Stickers: moduleVisibility.Stickers && isProposalModulesVisible,
+            Measures: moduleVisibility.Measures && isProposalModulesVisible,
+            Nominees: moduleVisibility.Nominees && isBaseNomineesVisible,
             Admin: false
         );
     }
 
-    public static bool IsModuleEnabled(EventModulesDto modules, EventModuleKey moduleKey)
+    public static bool IsModuleEnabled(EventModulesDto effectiveModules, EventModuleKey moduleKey)
     {
         return moduleKey switch
         {
-            EventModuleKey.Feed => modules.Feed,
-            EventModuleKey.SecretSanta => modules.SecretSanta,
-            EventModuleKey.Wishlist => modules.Wishlist,
-            EventModuleKey.Categories => modules.Categories,
-            EventModuleKey.Voting => modules.Voting,
-            EventModuleKey.Gala => modules.Gala,
-            EventModuleKey.Stickers => modules.Stickers,
-            EventModuleKey.Measures => modules.Measures,
-            EventModuleKey.Nominees => modules.Nominees,
-            EventModuleKey.Admin => modules.Admin,
+            EventModuleKey.Feed => effectiveModules.Feed,
+            EventModuleKey.SecretSanta => effectiveModules.SecretSanta,
+            EventModuleKey.Wishlist => effectiveModules.Wishlist,
+            EventModuleKey.Categories => effectiveModules.Categories,
+            EventModuleKey.Voting => effectiveModules.Voting,
+            EventModuleKey.Gala => effectiveModules.Gala,
+            EventModuleKey.Stickers => effectiveModules.Stickers,
+            EventModuleKey.Measures => effectiveModules.Measures,
+            EventModuleKey.Nominees => effectiveModules.Nominees,
+            EventModuleKey.Admin => effectiveModules.Admin,
             _ => false
         };
     }
 
-    public static bool IsPhaseOpen(EventPhaseEntity? phase)
+    public static bool IsPhaseOpen(EventPhaseEntity? eventPhase)
     {
-        if (phase is null || !phase.IsActive) return false;
+        if (eventPhase is null || !eventPhase.IsActive) return false;
 
-        var now = DateTime.UtcNow;
-        return phase.StartDateUtc <= now && now <= phase.EndDateUtc;
+        var currentTimeUtc = DateTime.UtcNow;
+        return eventPhase.StartDateUtc <= currentTimeUtc && currentTimeUtc <= eventPhase.EndDateUtc;
     }
 
     private static Task<SecretSantaDrawEntity?> GetLatestSecretSantaDrawAsync(
-        CanhoesDbContext db,
+        CanhoesDbContext dbContext,
         string eventId,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
-        var eventCodes = GetSecretSantaEventCodeCandidates(eventId);
-        return db.SecretSantaDraws
+        var secretSantaCandidateCodes = GetSecretSantaEventCodeCandidates(eventId);
+        return dbContext.SecretSantaDraws
             .AsNoTracking()
-            .Where(x => eventCodes.Contains(x.EventCode))
+            .Where(x => secretSantaCandidateCodes.Contains(x.EventCode))
             .OrderByDescending(x => x.CreatedAtUtc)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     private static List<string> GetSecretSantaEventCodeCandidates(string eventId)
     {
-        var codes = new List<string> { eventId };
+        var secretSantaCandidateCodes = new List<string> { eventId };
 
         if (string.Equals(eventId, EventContextDefaults.DefaultEventId, StringComparison.OrdinalIgnoreCase))
         {
-            var legacyYearCode = $"canhoes{DateTime.UtcNow.Year}";
-            if (!codes.Contains(legacyYearCode, StringComparer.OrdinalIgnoreCase))
+            var legacyYearEventCode = $"canhoes{DateTime.UtcNow.Year}";
+            if (!secretSantaCandidateCodes.Contains(legacyYearEventCode, StringComparer.OrdinalIgnoreCase))
             {
-                codes.Add(legacyYearCode);
+                secretSantaCandidateCodes.Add(legacyYearEventCode);
             }
         }
 
-        return codes;
+        return secretSantaCandidateCodes;
     }
 
 }

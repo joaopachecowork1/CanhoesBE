@@ -11,8 +11,21 @@ using Canhoes.Api.Middleware;
 using Canhoes.Api.Services;
 using Canhoes.Api.Startup;
 using Canhoes.Api.Caching;
+using Serilog;
+using Serilog.Events;
+using Serilog.Formatting.Json;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// --- SERILOG CONFIGURATION ---
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "Canhoes.API")
+    .WriteTo.Console(new JsonFormatter())
+    .CreateLogger();
+
+builder.Host.UseSerilog();
 
 var publicPort = builder.Configuration["PORT"]
     ?? builder.Configuration["WEBSITES_PORT"];
@@ -52,12 +65,12 @@ builder.Services.AddDbContext<CanhoesDbContext>(opt =>
             "Connection string not configured. Set ConnectionStrings__Default via environment variable or appsettings.json.");
     }
 
-    opt.UseSqlServer(cs, sql =>
+    opt.UseNpgsql(cs, npgsql =>
     {
-        sql.EnableRetryOnFailure(
+        npgsql.EnableRetryOnFailure(
             maxRetryCount: 6,
             maxRetryDelay: TimeSpan.FromSeconds(15),
-            errorNumbersToAdd: null);
+            errorCodesToAdd: null); // Npgsql uses errorCodesToAdd instead of errorNumbersToAdd
     });
 
     // Enable sensitive data logging in development for query debugging
@@ -155,7 +168,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("AdminOnly", policy => 
+        policy.RequireClaim("role", "admin")); // A claim é injetada pelo UserContextMiddleware
+});
 builder.Services.AddHttpContextAccessor();
 
 // In-memory cache for frequently-read, rarely-changed data
@@ -170,12 +187,30 @@ var healthCheckCs = builder.Configuration.GetConnectionString("DefaultConnection
     ?? "";
 
 builder.Services.AddHealthChecks()
-    .AddSqlServer(
+    .AddNpgSql(
         healthCheckCs,
-        name: "sql-server",
+        name: "postgresql",
         failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded);
 
+builder.Services.AddSignalR();
 builder.Services.AddFrontendCors(builder.Configuration);
+
+// --- RATE LIMITING ---
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("strict", opt =>
+    {
+        opt.Window = TimeSpan.FromSeconds(10);
+        opt.PermitLimit = 5;
+        opt.QueueLimit = 0;
+    });
+    options.AddFixedWindowLimiter("standard", opt =>
+    {
+        opt.Window = TimeSpan.FromSeconds(10);
+        opt.PermitLimit = 20;
+        opt.QueueLimit = 5;
+    });
+});
 
 // --- Response Compression (gzip + brotli) ---
 builder.Services.AddResponseCompression(options =>
@@ -209,6 +244,22 @@ builder.Services.AddOutputCache(options =>
 
 var app = builder.Build();
 
+// --- SECURITY HEADERS ---
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+}
+
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("X-Frame-Options", "DENY");
+    context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.Append("X-XSS-Protection", "1; mode=block");
+    context.Response.Headers.Append("Referrer-Policy", "strict-origin-when-cross-origin");
+    context.Response.Headers.Append("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none';");
+    await next();
+});
+
 // Response compression MUST be before UseRouting to compress all responses
 app.UseResponseCompression();
 
@@ -235,15 +286,18 @@ app.UseSwaggerUI();
 // Serve uploaded images (for CanhÃµes do Ano)
 app.UseStaticFiles();
 
+app.UseRateLimiter();
+
 app.UseAuthentication();
 if (useMockAuth)
 {
     app.UseMiddleware<MockAuthMiddleware>();
 }
-app.UseAuthorization();
 
 // Map authenticated Google user to local DB user (first user becomes admin)
 app.UseMiddleware<UserContextMiddleware>();
+
+app.UseAuthorization();
 
 // Output caching only after auth/user context is established
 app.UseOutputCache();
@@ -272,6 +326,7 @@ app.MapGet("/health", async ([FromServices] Canhoes.Api.Data.CanhoesDbContext db
 // Admin performance metrics (requires authentication)
 app.MapPerformanceMetrics();
 
+app.MapHub<Canhoes.Api.Hubs.EventHub>("/hubs/event");
 app.MapControllers();
 
 using (var scope = app.Services.CreateScope())

@@ -93,6 +93,14 @@ namespace Canhoes.Api
                 return false;
             }
 
+            // Allow Vercel previews and Microsoft Dev Tunnels dynamically
+            if (host.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".devtunnels.ms", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".ms-tunnels.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
             return allowedOriginSuffixes.Any(suffix =>
                 host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
                 host.EndsWith($".{suffix}", StringComparison.OrdinalIgnoreCase));
