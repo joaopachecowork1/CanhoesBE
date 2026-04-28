@@ -77,6 +77,11 @@ public sealed class HubPostCommentEntity
     [Required]
     public string PostId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Navigation property to the parent post. Used by queries that filter by Post.EventId.
+    /// </summary>
+    public HubPostEntity Post { get; set; } = null!;
+
     [Required]
     public Guid UserId { get; set; }
 

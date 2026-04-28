@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using Canhoes.Api.Data;
 using Canhoes.Api.DTOs;
 using Canhoes.Api.Models;
 using FluentAssertions;

@@ -866,7 +866,8 @@ public sealed partial class EventsController
             .ToListAsync(ct);
 
         var nomineesByCategoryId = approvedNomineesList
-            .GroupBy(n => n.CategoryId)
+            .Where(n => n.CategoryId is not null)
+            .GroupBy(n => n.CategoryId!)
             .ToDictionary(g => g.Key, g => g.ToList());
 
         var userNomineeVotesMap = await _db.Votes

@@ -244,7 +244,7 @@ public class CanhoesDbContext : DbContext
 
         modelBuilder.Entity<HubPostCommentEntity>(e =>
         {
-            e.HasOne<HubPostEntity>()
+            e.HasOne(x => x.Post)
                 .WithMany()
                 .HasForeignKey(x => x.PostId)
                 .OnDelete(DeleteBehavior.Cascade);

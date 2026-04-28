@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
+using Xunit;
+using Microsoft.Extensions.Configuration;
 
 namespace Canhoes.Tests;
 

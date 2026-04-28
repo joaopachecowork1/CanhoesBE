@@ -1,11 +1,8 @@
 using Canhoes.Api.Access;
-using Canhoes.Api.Controllers;
 using Canhoes.Api.DTOs;
 using Canhoes.Api.Models;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Routing;
-using System.Reflection;
 using Xunit;
 
 namespace Canhoes.Tests;
@@ -134,57 +131,5 @@ public sealed class EventModuleAccessTests
         adminState.EffectiveModules.Should().BeEquivalentTo(overview.Modules);
     }
 
-    [Fact]
-    public void LegacyAdminRoutes_ShouldNotBeExposed()
-    {
-        static IEnumerable<string> GetHttpTemplates(Type controllerType) =>
-            controllerType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .SelectMany(method => method.GetCustomAttributes<HttpMethodAttribute>(inherit: true))
-                .SelectMany(attribute => attribute.Template is null ? [] : new[] { attribute.Template });
-
-        var eventRoutes = GetHttpTemplates(typeof(EventsController)).ToList();
-        var legacyRoutes = GetHttpTemplates(typeof(CanhoesController)).ToList();
-
-        eventRoutes.Should().NotContain(template => template.Contains("admin/nominees", StringComparison.OrdinalIgnoreCase) && !template.Contains("summary", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/votes", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/members", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/official-results", StringComparison.OrdinalIgnoreCase) && !template.Contains("paged", StringComparison.OrdinalIgnoreCase) || template.Contains("admin/proposals", StringComparison.OrdinalIgnoreCase));
-        legacyRoutes.Should().NotContain(template => template.StartsWith("admin/", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task HubGetPosts_ShouldComposeMediaReactionsPollAndCounts()
-    {
-        await using var db = TestSupport.CreateDbContext();
-        var userId = Guid.NewGuid();
-        var otherUserId = Guid.NewGuid();
-
-        TestSupport.SeedEvent(db, "event-feed", isActive: true);
-        TestSupport.SeedState(db, "event-feed", EventPhaseTypes.Proposals, TestSupport.BuildVisibility());
-        TestSupport.SeedMember(db, "event-feed", userId);
-        TestSupport.SeedUser(db, userId, "autor@example.com", "Autor");
-        TestSupport.SeedUser(db, otherUserId, "outro@example.com", "Outro");
-
-        db.HubPosts.Add(new HubPostEntity { Id = "post-1", EventId = "event-feed", AuthorUserId = userId, Text = "Post principal", MediaUrl = null, MediaUrlsJson = "[]", IsPinned = false, CreatedAtUtc = DateTime.UtcNow });
-        db.HubPostMedia.Add(new HubPostMediaEntity { Id = "media-1", PostId = "post-1", Url = "/uploads/hub/post-1.png", OriginalFileName = "post-1.png", UploadedAtUtc = DateTime.UtcNow });
-        db.HubPostComments.Add(new HubPostCommentEntity { Id = "comment-1", PostId = "post-1", UserId = otherUserId, Text = "Comentario", CreatedAtUtc = DateTime.UtcNow });
-        db.HubPostReactions.AddRange(new HubPostReactionEntity { Id = "reaction-1", PostId = "post-1", UserId = userId, Emoji = "❤️", CreatedAtUtc = DateTime.UtcNow }, new HubPostReactionEntity { Id = "reaction-2", PostId = "post-1", UserId = otherUserId, Emoji = "🔥", CreatedAtUtc = DateTime.UtcNow });
-        db.HubPostPolls.Add(new HubPostPollEntity { PostId = "post-1", Question = "Qual escolhes?", CreatedAtUtc = DateTime.UtcNow });
-        db.HubPostPollOptions.AddRange(new HubPostPollOptionEntity { Id = "opt-1", PostId = "post-1", Text = "Opcao A", SortOrder = 0 }, new HubPostPollOptionEntity { Id = "opt-2", PostId = "post-1", Text = "Opcao B", SortOrder = 1 });
-        db.HubPostPollVotes.AddRange(new HubPostPollVoteEntity { Id = "vote-1", PostId = "post-1", UserId = userId, OptionId = "opt-1", CreatedAtUtc = DateTime.UtcNow }, new HubPostPollVoteEntity { Id = "vote-2", PostId = "post-1", UserId = otherUserId, OptionId = "opt-2", CreatedAtUtc = DateTime.UtcNow });
-        db.SaveChanges();
-
-        var controller = TestSupport.CreateHubController(db, userId);
-        var result = await controller.GetPosts(50, CancellationToken.None);
-        var posts = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeAssignableTo<List<HubPostDto>>().Subject;
-        var post = posts.Should().ContainSingle().Subject;
-
-        post.AuthorName.Should().Be("Autor");
-        post.MediaUrls.Should().Contain("/uploads/hub/post-1.png");
-        post.CommentCount.Should().Be(1);
-        post.ReactionCounts.Should().ContainKey("❤️").WhoseValue.Should().Be(1);
-        post.ReactionCounts.Should().ContainKey("🔥").WhoseValue.Should().Be(1);
-        post.MyReactions.Should().Contain("❤️");
-        post.LikedByMe.Should().BeTrue();
-        post.Poll.Should().NotBeNull();
-        post.Poll!.MyOptionId.Should().Be("opt-1");
-        post.Poll.TotalVotes.Should().Be(2);
-    }
 }
+

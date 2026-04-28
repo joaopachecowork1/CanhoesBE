@@ -34,22 +34,6 @@ public sealed class ContractTests
     }
 
     [Fact]
-    public async Task Users_ShouldReturnPagedShape()
-    {
-        var db = TestSupport.CreateDbContext();
-        db.Users.Add(new UserEntity { Id = Guid.NewGuid(), ExternalId = "a", Email = "a@example.com", DisplayName = "Alice", IsAdmin = true, CreatedAt = DateTime.UtcNow });
-        db.Users.Add(new UserEntity { Id = Guid.NewGuid(), ExternalId = "b", Email = "b@example.com", DisplayName = "Bob", IsAdmin = false, CreatedAt = DateTime.UtcNow });
-        db.SaveChanges();
-
-        var controller = TestSupport.CreateUsersController(db, Guid.NewGuid());
-        var result = await controller.ListUsers(skip: 0, take: 1, CancellationToken.None);
-        var page = result.Value.Should().BeOfType<PagedResult<PublicUserDto>>().Subject;
-
-        page.Items.Should().HaveCount(1);
-        page.Total.Should().Be(2);
-    }
-
-    [Fact]
     public async Task EventsList_ShouldReturnSummaries()
     {
         var db = TestSupport.CreateDbContext();

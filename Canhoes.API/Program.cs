@@ -1,16 +1,17 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Mvc;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using Canhoes.Api;
 using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Middleware;
 using Canhoes.Api.Services;
 using Canhoes.Api.Startup;
-using Canhoes.Api.Caching;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Json;
@@ -83,7 +84,6 @@ builder.Services.AddDbContext<CanhoesDbContext>(opt =>
     opt.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 });
 
-builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<SecretSantaService>();
 
 // --- AUTH (Google id_token) ---
