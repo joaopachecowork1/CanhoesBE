@@ -68,9 +68,31 @@ public sealed class UserContextMiddleware
 
             if (!string.IsNullOrWhiteSpace(sub) && !string.IsNullOrWhiteSpace(email))
             {
+                var isAdminFromMock = isMockAuth
+                    && ctx.Items.TryGetValue("MockAuthIsAdmin", out var adminObj)
+                    && adminObj is bool adminBool && adminBool;
+                var isAdminFromAllowlist = IsAdminEmail(email);
+                var shouldForceAdmin = isAdminFromMock || isAdminFromAllowlist;
                 var cacheKey = $"user-context:{sub}:{email}";
                 if (_cache.TryGetValue(cacheKey, out UserContextSnapshot? cached) && cached is not null)
                 {
+                    if (!cached.IsAdmin && shouldForceAdmin)
+                    {
+                        cached = cached with
+                        {
+                            User = cached.User with { IsAdmin = true },
+                            IsAdmin = true
+                        };
+                        _cache.Set(
+                            cacheKey,
+                            cached,
+                            new MemoryCacheEntryOptions
+                            {
+                                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                                SlidingExpiration = TimeSpan.FromMinutes(1)
+                            });
+                    }
+
                     ApplyContext(ctx, cached);
                     await _next(ctx);
                     return;
@@ -81,52 +103,23 @@ public sealed class UserContextMiddleware
 
                 if (user == null)
                 {
-                    var isAdminFromMock = isMockAuth
-                        && ctx.Items.TryGetValue("MockAuthIsAdmin", out var adminObj)
-                        && adminObj is bool adminBool && adminBool;
-
                     user = new UserEntity
                     {
                         Id = Guid.NewGuid(),
                         Email = email,
                         DisplayName = name,
                         ExternalId = sub,
-                        IsAdmin = isAdminFromMock || !await _db.Users.AnyAsync(ctx.RequestAborted),
+                        IsAdmin = shouldForceAdmin || !await _db.Users.AnyAsync(ctx.RequestAborted),
                         CreatedAt = DateTime.UtcNow
                     };
                     _db.Users.Add(user);
                     await _db.SaveChangesAsync(ctx.RequestAborted);
                 }
 
-                // If mock auth and user is in admin list, ensure IsAdmin flag
-                if (isMockAuth)
+                if (shouldForceAdmin && !user.IsAdmin)
                 {
-                    var isAdminFromMock = ctx.Items.TryGetValue("MockAuthIsAdmin", out var adminObj)
-                        && adminObj is bool adminBool && adminBool;
-
-                    if (isAdminFromMock && !user.IsAdmin)
-                    {
-                        user.IsAdmin = true;
-                        await _db.SaveChangesAsync(ctx.RequestAborted);
-                    }
-                }
-
-                try
-                {
-                    var adminEmails = _config.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
-
-                    if (adminEmails.Length > 0 && adminEmails.Any(e => string.Equals(e.Trim(), user.Email, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        if (!user.IsAdmin)
-                        {
-                            user.IsAdmin = true;
-                            await _db.SaveChangesAsync(ctx.RequestAborted);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to apply AdminEmails allowlist.");
+                    user.IsAdmin = true;
+                    await _db.SaveChangesAsync(ctx.RequestAborted);
                 }
 
                 var snapshot = new UserContextSnapshot(
@@ -149,6 +142,20 @@ public sealed class UserContextMiddleware
         }
 
         await _next(ctx);
+    }
+
+    private bool IsAdminEmail(string email)
+    {
+        try
+        {
+            var adminEmails = _config.GetSection("Auth:AdminEmails").Get<string[]>() ?? Array.Empty<string>();
+            return adminEmails.Any(e => string.Equals(e.Trim(), email, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to apply AdminEmails allowlist.");
+            return false;
+        }
     }
 
     private static void ApplyContext(HttpContext ctx, UserContextSnapshot snapshot)

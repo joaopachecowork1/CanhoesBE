@@ -26,11 +26,38 @@ public sealed class ContractTests
         db.SaveChanges();
 
         var controller = TestSupport.CreateUsersController(db, userId);
+        controller.ControllerContext.HttpContext.Items["CurrentUser"] = new PublicUserDto(userId, "member@example.com", "Member User", false);
         var result = await controller.Me(CancellationToken.None);
         var me = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<MeDto>().Subject;
 
         me.User.Email.Should().Be("member@example.com");
         me.User.DisplayName.Should().Be("Member User");
+        me.User.IsAdmin.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Me_ShouldReturnAdminFlagForAdminUser()
+    {
+        var userId = Guid.NewGuid();
+        var db = TestSupport.CreateDbContext();
+        db.Users.Add(new UserEntity
+        {
+            Id = userId,
+            ExternalId = userId.ToString("N"),
+            Email = "admin@example.com",
+            DisplayName = "Admin User",
+            IsAdmin = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        db.SaveChanges();
+
+        var controller = TestSupport.CreateUsersController(db, userId);
+        controller.ControllerContext.HttpContext.Items["CurrentUser"] = new PublicUserDto(userId, "admin@example.com", "Admin User", true);
+
+        var result = await controller.Me(CancellationToken.None);
+        var me = result.Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<MeDto>().Subject;
+
+        me.User.IsAdmin.Should().BeTrue();
     }
 
     [Fact]
@@ -83,6 +110,23 @@ public sealed class ContractTests
 
         overview.Event.Id.Should().Be("event-1");
         overview.Permissions.IsMember.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AdminState_ShouldForbidNonAdminMembers()
+    {
+        var userId = Guid.NewGuid();
+        await using var db = TestSupport.CreateDbContext();
+        TestSupport.SeedEvent(db, "event-1", isActive: true);
+        TestSupport.SeedState(db, "event-1", EventPhaseTypes.Proposals, TestSupport.BuildVisibility());
+        TestSupport.SeedMember(db, "event-1", userId);
+        TestSupport.SeedUser(db, userId, "member@example.com", "Member User", isAdmin: false);
+        await db.SaveChangesAsync();
+
+        var controller = TestSupport.CreateEventsController(db, userId, isAdmin: false);
+        var result = await controller.GetAdminState("event-1", CancellationToken.None);
+
+        result.Result.Should().BeOfType<ForbidResult>();
     }
 
     [Fact]

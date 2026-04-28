@@ -6,6 +6,7 @@ using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Canhoes.Tests;
 
@@ -21,7 +22,7 @@ internal static class TestSupport
 
     public static EventsController CreateEventsController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
     {
-        var controller = new EventsController(db)
+        var controller = new EventsController(db, cache: new MemoryCache(new MemoryCacheOptions()))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };
