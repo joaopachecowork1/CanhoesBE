@@ -17,7 +17,7 @@ internal static class TestControllerFactories
     {
         var controller = new EventsController(
             db,
-            env: null,
+            env: new FakeWebHostEnvironment(),
             secretSanta: new SecretSantaService(),
             cache: new MemoryCache(new MemoryCacheOptions()),
             hub: new NoopHubContext())

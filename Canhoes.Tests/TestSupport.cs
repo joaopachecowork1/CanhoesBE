@@ -25,7 +25,7 @@ internal static class TestSupport
     {
         var controller = new EventsController(
             db,
-            env: null,
+            env: new TestControllerFactories.FakeWebHostEnvironment(),
             secretSanta: new SecretSantaService(),
             cache: new MemoryCache(new MemoryCacheOptions()),
             hub: new TestControllerFactories.NoopHubContext())
