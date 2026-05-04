@@ -36,26 +36,6 @@ internal static class EventModuleAccessEvaluator
         string eventId,
         Guid userId,
         bool isAdmin,
-        CancellationToken cancellationToken)
-    {
-        var eventState = await GetOrCreateEventStateAsync(dbContext, eventId, cancellationToken);
-        var activePhase = await dbContext.EventPhases
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.IsActive)
-            .OrderByDescending(x => x.StartDateUtc)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        return await BuildSnapshotAsync(dbContext, eventId, userId, isAdmin, eventState, activePhase, cancellationToken);
-    }
-
-    /// <summary>
-    /// Overload that reuses already-loaded phases to avoid a duplicate DB query.
-    /// </summary>
-    public static async Task<EventModuleAccessSnapshot> EvaluateAsync(
-        CanhoesDbContext dbContext,
-        string eventId,
-        Guid userId,
-        bool isAdmin,
         List<EventPhaseEntity> phases,
         CancellationToken cancellationToken)
     {

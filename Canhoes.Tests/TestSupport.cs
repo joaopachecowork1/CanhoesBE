@@ -3,6 +3,7 @@ using Canhoes.Api.Controllers;
 using Canhoes.Api.Data;
 using Canhoes.Api.DTOs;
 using Canhoes.Api.Models;
+using Canhoes.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -22,7 +23,12 @@ internal static class TestSupport
 
     public static EventsController CreateEventsController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
     {
-        var controller = new EventsController(db, cache: new MemoryCache(new MemoryCacheOptions()))
+        var controller = new EventsController(
+            db,
+            env: null,
+            secretSanta: new SecretSantaService(),
+            cache: new MemoryCache(new MemoryCacheOptions()),
+            hub: new TestControllerFactories.NoopHubContext())
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

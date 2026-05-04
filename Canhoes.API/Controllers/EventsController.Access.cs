@@ -30,11 +30,13 @@ public sealed partial class EventsController
         var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
         if (accessError is not null) return (default!, default!, accessError);
 
+        var phases = await LoadEventPhasesAsync(eventId, ct);
         var moduleAccessSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(
             _db,
             eventId,
             eventAccess.UserId,
             eventAccess.IsAdmin,
+            phases,
             ct);
         if (!EventModuleAccessEvaluator.IsModuleEnabled(moduleAccessSnapshot.EffectiveModules, moduleKey))
         {
