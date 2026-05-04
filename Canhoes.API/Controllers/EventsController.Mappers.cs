@@ -30,6 +30,7 @@ public sealed partial class EventsController
             eventId,
             Guid.Empty,
             isAdmin: false,
+            eventPhases,
             ct);
 
         var activePhaseEntity = memberModuleAccess.ActivePhase ?? eventPhases.FirstOrDefault(x => x.IsActive);

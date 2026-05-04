@@ -16,7 +16,11 @@ public sealed class EventModuleAccessTests
         TestSupport.SeedEvent(db, "event-admin", isActive: true);
         TestSupport.SeedState(db, "event-admin", EventPhaseTypes.Draw, TestSupport.BuildVisibility(feed: false, wishlist: false, voting: false));
 
-        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-admin", Guid.NewGuid(), isAdmin: true, CancellationToken.None);
+        var phases = db.ChangeTracker.Entries<EventPhaseEntity>()
+            .Where(e => e.Entity.EventId == "event-admin")
+            .Select(e => e.Entity)
+            .ToList();
+        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-admin", Guid.NewGuid(), isAdmin: true, phases, CancellationToken.None);
 
         snapshot.EffectiveModules.Feed.Should().BeTrue();
         snapshot.EffectiveModules.SecretSanta.Should().BeTrue();
@@ -39,8 +43,16 @@ public sealed class EventModuleAccessTests
         TestSupport.SeedEvent(db, "event-b");
         TestSupport.SeedState(db, "event-b", EventPhaseTypes.Results, TestSupport.BuildVisibility(categories: false, gala: true));
 
-        var eventASnapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-a", Guid.NewGuid(), isAdmin: false, CancellationToken.None);
-        var eventBSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-b", Guid.NewGuid(), isAdmin: false, CancellationToken.None);
+        var eventAPhases = db.ChangeTracker.Entries<EventPhaseEntity>()
+            .Where(e => e.Entity.EventId == "event-a")
+            .Select(e => e.Entity)
+            .ToList();
+        var eventBPhases = db.ChangeTracker.Entries<EventPhaseEntity>()
+            .Where(e => e.Entity.EventId == "event-b")
+            .Select(e => e.Entity)
+            .ToList();
+        var eventASnapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-a", Guid.NewGuid(), isAdmin: false, eventAPhases, CancellationToken.None);
+        var eventBSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-b", Guid.NewGuid(), isAdmin: false, eventBPhases, CancellationToken.None);
 
         eventASnapshot.EffectiveModules.Categories.Should().BeTrue();
         eventASnapshot.EffectiveModules.Stickers.Should().BeTrue();
@@ -72,7 +84,11 @@ public sealed class EventModuleAccessTests
         TestSupport.SeedEvent(db, "event-phase-matrix", isActive: true);
         TestSupport.SeedState(db, "event-phase-matrix", activePhaseType, TestSupport.BuildVisibility());
 
-        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-phase-matrix", Guid.NewGuid(), isAdmin: false, CancellationToken.None);
+        var phases = db.ChangeTracker.Entries<EventPhaseEntity>()
+            .Where(e => e.Entity.EventId == "event-phase-matrix")
+            .Select(e => e.Entity)
+            .ToList();
+        var snapshot = await EventModuleAccessEvaluator.EvaluateAsync(db, "event-phase-matrix", Guid.NewGuid(), isAdmin: false, phases, CancellationToken.None);
 
         snapshot.EffectiveModules.Feed.Should().BeTrue();
         snapshot.EffectiveModules.SecretSanta.Should().Be(secretSantaVisible);
