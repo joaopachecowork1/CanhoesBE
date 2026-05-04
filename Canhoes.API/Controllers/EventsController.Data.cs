@@ -36,29 +36,33 @@ public sealed partial class EventsController
         });
     }
 
+    // These helpers return tracked entities so that property mutations made by
+    // callers are persisted when SaveChangesAsync is called.  The global
+    // QueryTrackingBehavior.NoTracking default would otherwise silently discard
+    // any changes made to the returned entity.
     private Task<AwardCategoryEntity?> FindCategoryAsync(
         string eventId,
         string categoryId,
         CancellationToken ct) =>
-        _db.AwardCategories.AsNoTracking().FirstOrDefaultAsync(x => x.Id == categoryId && x.EventId == eventId, ct);
+        _db.AwardCategories.AsTracking().FirstOrDefaultAsync(x => x.Id == categoryId && x.EventId == eventId, ct);
 
     private Task<CategoryProposalEntity?> FindCategoryProposalAsync(
         string eventId,
         string proposalId,
         CancellationToken ct) =>
-        _db.CategoryProposals.AsNoTracking().FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+        _db.CategoryProposals.AsTracking().FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
 
     private Task<MeasureProposalEntity?> FindMeasureProposalAsync(
         string eventId,
         string proposalId,
         CancellationToken ct) =>
-        _db.MeasureProposals.AsNoTracking().FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
+        _db.MeasureProposals.AsTracking().FirstOrDefaultAsync(x => x.Id == proposalId && x.EventId == eventId, ct);
 
     private Task<NomineeEntity?> FindNomineeAsync(
         string eventId,
         string nomineeId,
         CancellationToken ct) =>
-        _db.Nominees.AsNoTracking().FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
+        _db.Nominees.AsTracking().FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
 
     private Task<List<EventPhaseEntity>> LoadEventPhasesAsync(
         string eventId,
@@ -121,6 +125,12 @@ public sealed partial class EventsController
             .OrderBy(x => x.SortOrder)
             .ToListAsync(ct);
 
+    // Votes  = nominee votes (used when AwardCategoryKind != UserVote).
+    // UserVotes = member votes (used when AwardCategoryKind == UserVote).
+    // A category belongs to exactly one kind, so a user can have at most one
+    // row in either table per category — never in both.  Adding the two counts
+    // therefore gives the total number of distinct categories voted in without
+    // double-counting.
     private async Task<int> CountSubmittedVotesAsync(
         Guid userId,
         IReadOnlyCollection<string> categoryIds,

@@ -36,17 +36,17 @@ public sealed partial class EventsController : ControllerBase
         Dictionary<Guid, UserEntity> UsersById);
 
     public EventsController(
-        CanhoesDbContext db, 
-        IWebHostEnvironment? env = null, 
-        SecretSantaService? secretSanta = null, 
-        IMemoryCache? cache = null,
-        Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub>? hub = null)
+        CanhoesDbContext db,
+        IWebHostEnvironment? env,
+        SecretSantaService secretSanta,
+        IMemoryCache cache,
+        Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub> hub)
     {
         _db = db;
         _env = env;
-        _secretSanta = secretSanta!;
-        _cache = cache!;
-        _hub = hub!;
+        _secretSanta = secretSanta;
+        _cache = cache;
+        _hub = hub;
     }
 
     /// <summary>
@@ -166,6 +166,7 @@ public sealed partial class EventsController : ControllerBase
             .Select(e => new
             {
                 ActiveCategoryCount = _db.AwardCategories.Count(c => c.EventId == eventId && c.IsActive),
+                // Votes = nominee votes; UserVotes = member votes (mutually exclusive per category kind).
                 SubmittedVotes = _db.Votes.Count(v => v.UserId == eventAccess.UserId && _db.AwardCategories.Any(c => c.Id == v.CategoryId && c.EventId == eventId && c.IsActive))
                     + _db.UserVotes.Count(uv => uv.VoterUserId == eventAccess.UserId && _db.AwardCategories.Any(c => c.Id == uv.CategoryId && c.EventId == eventId && c.IsActive)),
                 MemberCount = _db.EventMembers.Count(m => m.EventId == eventId),
