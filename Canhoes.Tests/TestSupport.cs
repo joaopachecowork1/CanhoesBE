@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Canhoes.Api.Repositories;
+using Canhoes.Api.Services;
 
 namespace Canhoes.Tests;
 
@@ -22,7 +24,42 @@ internal static class TestSupport
 
     public static EventsController CreateEventsController(CanhoesDbContext db, Guid userId, bool isAdmin = false)
     {
-        var controller = new EventsController(db, cache: new MemoryCache(new MemoryCacheOptions()))
+        var userRepository = new UserRepository(db);
+        var eventRepository = new EventRepository(db);
+        var awardRepository = new AwardRepository(db);
+        var secretSantaRepository = new SecretSantaRepository(db);
+        
+        var moduleAccessService = new ModuleAccessService(eventRepository, secretSantaRepository);
+        var feedService = new FeedService(new FeedRepository(db), userRepository);
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var eventService = new EventService(eventRepository, userRepository, awardRepository, secretSantaRepository, moduleAccessService, feedService, cache);
+        var awardService = new AwardService(awardRepository, userRepository, eventRepository);
+        var secretSantaService = new SecretSantaService(secretSantaRepository, userRepository, eventRepository);
+
+        var controller = new EventsController(eventService, awardService, secretSantaService, db, cache: cache)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+        controller.ControllerContext.HttpContext.Items["UserId"] = userId;
+        controller.ControllerContext.HttpContext.Items["IsAdmin"] = isAdmin;
+        return controller;
+    }
+
+    public static AdminEventsController CreateAdminEventsController(CanhoesDbContext db, Guid userId, bool isAdmin = true)
+    {
+        var userRepository = new UserRepository(db);
+        var eventRepository = new EventRepository(db);
+        var awardRepository = new AwardRepository(db);
+        var secretSantaRepository = new SecretSantaRepository(db);
+
+        var moduleAccessService = new ModuleAccessService(eventRepository, secretSantaRepository);
+        var feedService = new FeedService(new FeedRepository(db), userRepository);
+        var cache = new MemoryCache(new MemoryCacheOptions());
+        var eventService = new EventService(eventRepository, userRepository, awardRepository, secretSantaRepository, moduleAccessService, feedService, cache);
+        var awardService = new AwardService(awardRepository, userRepository, eventRepository);
+        var secretSantaService = new SecretSantaService(secretSantaRepository, userRepository, eventRepository);
+
+        var controller = new AdminEventsController(eventService, awardService, secretSantaService, db, cache: cache)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };
@@ -33,7 +70,8 @@ internal static class TestSupport
 
     public static UsersController CreateUsersController(CanhoesDbContext db, Guid userId)
     {
-        var controller = new UsersController(db)
+        var userRepository = new UserRepository(db);
+        var controller = new UsersController(userRepository)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

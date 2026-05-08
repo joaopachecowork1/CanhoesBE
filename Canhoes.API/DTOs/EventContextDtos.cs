@@ -177,6 +177,18 @@ public record AdminNomineeVoteTallyDto(
     int VoteCount,
     List<string> VoterUserIds
 );
+public record EventActiveContextDto(
+    EventSummaryDto Event,
+    EventOverviewDto Overview
+);
+
+public record EventHomeSnapshotDto(
+    EventSummaryDto Event,
+    EventOverviewDto Overview,
+    EventVotingOverviewDto Voting,
+    EventSecretSantaOverviewDto SecretSanta,
+    List<EventFeedPostFullDto> RecentPosts
+);
 
 /// <summary>
 /// Aggregated official result for a user-vote category.
@@ -372,15 +384,12 @@ public record EventVotingBoardDto(
 
 public record CreateEventVoteRequest(
     string CategoryId,
-    string OptionId
+    string SelectionId
 );
 
 public record EventVoteDto(
-    string Id,
-    Guid UserId,
     string CategoryId,
-    string OptionId,
-    DateTime UpdatedAtUtc
+    string SelectionId
 );
 
 public record EventProposalDto(
@@ -423,4 +432,12 @@ public record CreateEventWishlistItemRequest(
     [Required][StringLength(256)] string Title,
     [StringLength(1024)] string? Link,
     [StringLength(2000)] string? Notes
+);
+
+public record SecretSantaDrawDto(
+    string Id,
+    string EventId,
+    string EventCode,
+    DateTimeOffset CreatedAtUtc,
+    EventUserDto AssignedUser
 );

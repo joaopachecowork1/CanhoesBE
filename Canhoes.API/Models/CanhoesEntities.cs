@@ -138,6 +138,9 @@ public sealed class VoteEntity
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
+
+    [Required]
     public string CategoryId { get; set; } = string.Empty;
 
     [Required]
@@ -158,6 +161,9 @@ public sealed class UserVoteEntity
 {
     [Key]
     public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    [Required]
+    public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
 
     [Required]
     public string CategoryId { get; set; } = string.Empty;
@@ -192,6 +198,9 @@ public sealed class CanhoesEventStateEntity
     /// </summary>
     [Required]
     public string ModuleVisibilityJson { get; set; } = "{}";
+
+    public bool HasSecretSantaDraw { get; set; } = false;
+    public string? SecretSantaEventCode { get; set; }
 }
 
 

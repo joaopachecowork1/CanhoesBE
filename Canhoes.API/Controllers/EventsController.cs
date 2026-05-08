@@ -1,52 +1,39 @@
 using Canhoes.Api.Access;
+using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Models;
 using Canhoes.Api.Services;
+using Canhoes.Api.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
-using static Canhoes.Api.Controllers.EventsControllerMappers;
+using Microsoft.AspNetCore.Hosting;
+using static Canhoes.Api.Mappers.EventMappers;
 
 namespace Canhoes.Api.Controllers;
 
 [ApiController]
-[Route("api/v1/events")]
 [Authorize]
-public sealed partial class EventsController : ControllerBase
+public sealed class EventsController : EventControllerBase
 {
-    private readonly CanhoesDbContext _db;
-    private readonly IWebHostEnvironment? _env;
-    private readonly SecretSantaService _secretSanta;
-    private readonly IMemoryCache _cache;
-    private readonly Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub> _hub;
-
-    private sealed record EventAccessContext(
-        EventEntity Event,
-        Guid UserId,
-        bool IsAdmin,
-        bool IsMember)
-    {
-        public bool CanAccess => IsAdmin || IsMember;
-        public bool CanManage => IsAdmin;
-    }
-
-    private sealed record EventMemberDirectory(
-        List<EventMemberEntity> Members,
-        Dictionary<Guid, UserEntity> UsersById);
+    private readonly IEventService _eventService;
+    private readonly IAwardService _awardService;
+    private readonly ISecretSantaService _secretSanta;
 
     public EventsController(
+        IEventService eventService,
+        IAwardService awardService,
+        ISecretSantaService secretSanta,
         CanhoesDbContext db, 
         IWebHostEnvironment? env = null, 
-        SecretSantaService? secretSanta = null, 
         IMemoryCache? cache = null,
-        Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub>? hub = null)
+        Microsoft.AspNetCore.SignalR.IHubContext<Canhoes.Api.Hubs.EventHub>? hub = null) 
+        : base(db, cache, hub, env)
     {
-        _db = db;
-        _env = env;
-        _secretSanta = secretSanta!;
-        _cache = cache!;
-        _hub = hub!;
+        _eventService = eventService;
+        _awardService = awardService;
+        _secretSanta = secretSanta;
     }
 
     /// <summary>
@@ -64,10 +51,34 @@ public sealed partial class EventsController : ControllerBase
             return Ok(cached);
         }
 
-        var eventSummaries = await LoadEventSummariesAsync(ct);
+        var eventSummaries = await _eventService.GetEventSummariesAsync(ct);
         _cache.Set(cacheKey, eventSummaries, TimeSpan.FromSeconds(60));
 
         return Ok(eventSummaries);
+    }
+
+    /// <summary>
+    /// Retrieves the context for the currently active event.
+    /// </summary>
+    [HttpGet("active/context")]
+    public async Task<ActionResult<EventActiveContextDto>> GetActiveEventContext(CancellationToken ct)
+    {
+        var userId = HttpContext.GetUserId();
+        var isAdmin = HttpContext.IsAdmin();
+        var context = await _eventService.GetActiveEventContextAsync(userId, isAdmin, ct);
+        return context is null ? NotFound() : Ok(context);
+    }
+
+    /// <summary>
+    /// Retrieves a snapshot of the active event for the home dashboard.
+    /// </summary>
+    [HttpGet("active/home-snapshot")]
+    public async Task<ActionResult<EventHomeSnapshotDto>> GetActiveHomeSnapshot(CancellationToken ct)
+    {
+        var userId = HttpContext.GetUserId();
+        var isAdmin = HttpContext.IsAdmin();
+        var snapshot = await _eventService.GetActiveHomeSnapshotAsync(userId, isAdmin, ct);
+        return snapshot is null ? NotFound() : Ok(snapshot);
     }
 
     /// <summary>
@@ -91,35 +102,8 @@ public sealed partial class EventsController : ControllerBase
             return Ok(cached);
         }
 
-        var memberDirectory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var members = memberDirectory.Members;
-        var userLookup = memberDirectory.UsersById;
-
-        var eventUserDtos = members
-            .Where(x => userLookup.ContainsKey(x.UserId))
-            .OrderByDescending(x => x.Role == EventRoles.Admin)
-            .ThenBy(x => userLookup.TryGetValue(x.UserId, out var user)
-                ? GetUserName(user)
-                : x.UserId.ToString())
-            .Select(x =>
-            {
-                var user = userLookup[x.UserId];
-                return new EventUserDto(user.Id, GetUserName(user), x.Role);
-            })
-            .ToList();
-
-        var eventPhaseDtos = (await LoadEventPhasesAsync(eventId, ct))
-            .Select(ToEventPhaseDto)
-            .ToList();
-
-        var activeEventPhase = eventPhaseDtos.FirstOrDefault(x => x.IsActive);
-
-        var eventContext = new EventContextDto(
-            ToEventSummaryDto(eventAccess.Event),
-            eventUserDtos,
-            eventPhaseDtos,
-            activeEventPhase
-        );
+        var eventContext = await _eventService.GetEventContextAsync(eventId, eventAccess.UserId, eventAccess.IsAdmin, ct);
+        if (eventContext is null) return NotFound();
 
         _cache.Set(cacheKey, eventContext, TimeSpan.FromSeconds(30));
 
@@ -127,13 +111,12 @@ public sealed partial class EventsController : ControllerBase
     }
 
     /// <summary>
-    /// Returns a high-level overview of the event for the member dashboard.
-    /// Optimized to consolidate counts and module visibility in a single response.
-    /// Results are cached for 30 seconds.
+    /// Retrieves the high-level overview for a specific event.
+    /// Requires membership or admin access. Results are cached for 30 seconds.
     /// </summary>
     /// <param name="eventId">The unique event identifier.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>An overview containing permissions, counts, and active phase information.</returns>
+    /// <returns>The event overview containing phases, permissions, and counts.</returns>
     [HttpGet("{eventId}/overview")]
     public async Task<ActionResult<EventOverviewDto>> GetEventOverview(
         [FromRoute] string eventId,
@@ -142,61 +125,44 @@ public sealed partial class EventsController : ControllerBase
         var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
         if (accessError is not null) return accessError;
 
-        var cacheKey = $"EventOverview_{eventId}_{eventAccess.UserId}";
-        if (_cache.TryGetValue(cacheKey, out EventOverviewDto? cached))
-        {
-            return Ok(cached);
-        }
+        var overview = await _eventService.GetEventOverviewAsync(eventId, eventAccess.UserId, eventAccess.IsAdmin, ct);
+        if (overview is null) return NotFound();
 
-        var eventPhases = await LoadEventPhasesAsync(eventId, ct);
-        var moduleAccess = await EventModuleAccessEvaluator.EvaluateAsync(_db, eventId, eventAccess.UserId, eventAccess.IsAdmin, eventPhases, ct);
-        
-        var activeEventPhaseEntity = moduleAccess.ActivePhase ?? eventPhases.FirstOrDefault(x => x.IsActive);
-        var activeEventPhase = activeEventPhaseEntity is null ? null : ToEventPhaseDto(activeEventPhaseEntity);
-        var nextEventPhase = eventPhases
-            .Where(x => activeEventPhaseEntity is null ? x.EndDateUtc >= DateTime.UtcNow : x.StartDateUtc > activeEventPhaseEntity.StartDateUtc)
-            .OrderBy(x => x.StartDateUtc)
-            .Select(ToEventPhaseDto)
-            .FirstOrDefault();
+        return Ok(overview);
+    }
 
-        // Optimized consolidated projection
-        var eventStats = await _db.Events
-            .AsNoTracking()
-            .Where(e => e.Id == eventId)
-            .Select(e => new
-            {
-                ActiveCategoryCount = _db.AwardCategories.Count(c => c.EventId == eventId && c.IsActive),
-                SubmittedVotes = _db.Votes.Count(v => v.UserId == eventAccess.UserId && _db.AwardCategories.Any(c => c.Id == v.CategoryId && c.EventId == eventId && c.IsActive))
-                    + _db.UserVotes.Count(uv => uv.VoterUserId == eventAccess.UserId && _db.AwardCategories.Any(c => c.Id == uv.CategoryId && c.EventId == eventId && c.IsActive)),
-                MemberCount = _db.EventMembers.Count(m => m.EventId == eventId),
-                PostCount = _db.HubPosts.Count(p => p.EventId == eventId),
-                PendingProposals = _db.CategoryProposals.Count(cp => cp.EventId == eventId && cp.Status == ProposalStatus.Pending),
-                UserWishlistCount = _db.WishlistItems.Count(w => w.EventId == eventId && w.UserId == eventAccess.UserId),
-                UserProposalCount = _db.CategoryProposals.Count(cp => cp.EventId == eventId && cp.ProposedByUserId == eventAccess.UserId)
-            })
-            .FirstOrDefaultAsync(ct);
+    /// <summary>
+    /// Retrieves the Secret Santa draw for the current user in the specified event.
+    /// </summary>
+    /// <param name="eventId">The event identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The Secret Santa draw details if found; otherwise, Not Found.</returns>
+    [HttpGet("{eventId}/secret-santa/draw")]
+    public async Task<ActionResult<SecretSantaDrawDto>> GetSecretSantaDraw([FromRoute] string eventId, CancellationToken ct)
+    {
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
+        if (accessError is not null) return accessError;
 
-        if (eventStats == null) return NotFound();
+        var draw = await _eventService.GetSecretSantaDrawAsync(eventId, eventAccess.UserId, ct);
+        if (draw is null) return NotFound("Secret Santa draw not found for you in this event.");
 
-        var userCanSubmitProposal = activeEventPhaseEntity?.Type == EventPhaseTypes.Proposals && IsPhaseOpen(activeEventPhaseEntity);
-        var userCanVote = activeEventPhaseEntity?.Type == EventPhaseTypes.Voting && IsPhaseOpen(activeEventPhaseEntity);
+        return Ok(draw);
+    }
 
-        var eventOverview = new EventOverviewDto(
-            ToEventSummaryDto(eventAccess.Event),
-            activeEventPhase,
-            nextEventPhase,
-            new EventPermissionsDto(eventAccess.IsAdmin, eventAccess.IsMember, eventAccess.CanAccess, userCanSubmitProposal, userCanVote, eventAccess.CanManage),
-            new EventCountsDto(eventStats.MemberCount, eventStats.PostCount, eventStats.ActiveCategoryCount, eventStats.PendingProposals, eventStats.UserWishlistCount),
-            moduleAccess.HasSecretSantaDraw,
-            moduleAccess.HasSecretSantaAssignment,
-            eventStats.UserWishlistCount,
-            eventStats.UserProposalCount,
-            eventStats.SubmittedVotes,
-            eventStats.ActiveCategoryCount,
-            moduleAccess.EffectiveModules);
+    /// <summary>
+    /// Retrieves a paged list of active award categories for the specified event.
+    /// </summary>
+    [HttpGet("{eventId}/categories")]
+    public async Task<ActionResult<PagedResult<AwardCategoryDto>>> GetCategories(
+        [FromRoute] string eventId,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 50,
+        CancellationToken ct = default)
+    {
+        var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
+        if (accessError is not null) return accessError;
 
-        _cache.Set(cacheKey, eventOverview, TimeSpan.FromSeconds(30));
-
-        return Ok(eventOverview);
+        var categories = await _awardService.GetActiveCategoriesPagedAsync(eventId, skip, take, ct);
+        return Ok(categories);
     }
 }

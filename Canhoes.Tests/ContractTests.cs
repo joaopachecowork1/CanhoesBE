@@ -123,7 +123,7 @@ public sealed class ContractTests
         TestSupport.SeedUser(db, userId, "member@example.com", "Member User", isAdmin: false);
         await db.SaveChangesAsync();
 
-        var controller = TestSupport.CreateEventsController(db, userId, isAdmin: false);
+        var controller = TestSupport.CreateAdminEventsController(db, userId, isAdmin: false);
         var result = await controller.GetAdminState("event-1", CancellationToken.None);
 
         result.Result.Should().BeOfType<ForbidResult>();

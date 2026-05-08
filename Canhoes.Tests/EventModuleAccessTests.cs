@@ -99,7 +99,7 @@ public sealed class EventModuleAccessTests
         TestSupport.SeedUser(db, adminId, "admin@example.com", "Admin", isAdmin: true);
         TestSupport.SeedMember(db, "event-preview", adminId);
 
-        var adminController = TestSupport.CreateEventsController(db, adminId, isAdmin: true);
+        var adminController = TestSupport.CreateAdminEventsController(db, adminId, isAdmin: true);
         var memberController = TestSupport.CreateEventsController(db, memberId, isAdmin: false);
 
         var adminStateResult = await adminController.GetAdminState("event-preview", CancellationToken.None);
@@ -119,7 +119,7 @@ public sealed class EventModuleAccessTests
         db.SecretSantaDraws.Add(new SecretSantaDrawEntity { Id = "draw-1", EventCode = "event-secret-santa", CreatedAtUtc = DateTime.UtcNow, CreatedByUserId = adminId, IsLocked = true });
         db.SaveChanges();
 
-        var adminController = TestSupport.CreateEventsController(db, adminId, isAdmin: true);
+        var adminController = TestSupport.CreateAdminEventsController(db, adminId, isAdmin: true);
         var memberController = TestSupport.CreateEventsController(db, memberId, isAdmin: false);
 
         var adminStateResult = await adminController.GetAdminState("event-secret-santa", CancellationToken.None);

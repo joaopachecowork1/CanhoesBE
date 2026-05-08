@@ -99,6 +99,7 @@ public record AdminVoteAuditRowDto(
     string CategoryId,
     string CategoryName,
     string NomineeId,
+    string NomineeName,
     Guid UserId,
     string UserName,
     DateTimeOffset UpdatedAtUtc
@@ -190,3 +191,10 @@ public record WishlistItemDto(
 );
 
 public record CreateWishlistItemRequest(string Title, string? Url, string? Notes);
+
+public record MyNominationStatusDto(
+    bool HasNomination,
+    string? CategoryId,
+    string? Status,
+    string? NomineeId,
+    string? NomineeTitle);

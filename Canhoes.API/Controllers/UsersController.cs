@@ -1,11 +1,10 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using Canhoes.Api.Auth;
-using Canhoes.Api.Data;
-using Canhoes.Api.Models;
 using Canhoes.Api.DTOs;
+using Canhoes.Api.Repositories;
+using static Canhoes.Api.Mappers.EventMappers;
 
 namespace Canhoes.Api.Controllers;
 
@@ -14,19 +13,17 @@ namespace Canhoes.Api.Controllers;
 [Authorize]
 public sealed class UsersController : ControllerBase
 {
-    private readonly CanhoesDbContext _db;
+    private readonly IUserRepository _userRepository;
 
-    public UsersController(CanhoesDbContext db)
+    public UsersController(IUserRepository userRepository)
     {
-        _db = db;
+        _userRepository = userRepository;
     }
 
     /// <summary>
     /// Retrieves the currently authenticated user profile.
     /// If the user does not exist in the local database, a profile is automatically created.
     /// </summary>
-    /// <param name="ct">Cancellation token.</param>
-    /// <returns>The user profile information.</returns>
     [HttpGet("me")]
     public async Task<ActionResult<MeDto>> Me(CancellationToken ct)
     {
@@ -41,42 +38,16 @@ public sealed class UsersController : ControllerBase
 
     private async Task<PublicUserDto?> ResolveCurrentUserAsync(ClaimsPrincipal principal, CancellationToken ct)
     {
-        var externalId = principal.FindFirstValue("sub")
-            ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
-        var email = principal.FindFirstValue("email")
-            ?? principal.FindFirstValue(ClaimTypes.Email);
+        var externalId = principal.FindFirstValue("sub") ?? principal.FindFirstValue(ClaimTypes.NameIdentifier);
+        var email = principal.FindFirstValue("email") ?? principal.FindFirstValue(ClaimTypes.Email);
 
-        if (string.IsNullOrWhiteSpace(externalId) || string.IsNullOrWhiteSpace(email))
-        {
-            return null;
-        }
+        if (string.IsNullOrWhiteSpace(externalId) || string.IsNullOrWhiteSpace(email)) return null;
 
-        var existingUserDto = await _db.Users.AsNoTracking()
-            .Where(u => u.ExternalId == externalId || u.Email == email)
-            .Select(u => new PublicUserDto(u.Id, u.Email, u.DisplayName, u.IsAdmin))
-            .FirstOrDefaultAsync(ct);
+        var displayName = principal.FindFirstValue("name")
+            ?? principal.FindFirstValue(ClaimTypes.Name)
+            ?? principal.FindFirstValue("displayName");
 
-        if (existingUserDto is not null)
-        {
-            return existingUserDto;
-        }
-
-        var newUserEntity = new UserEntity
-        {
-            Id = Guid.NewGuid(),
-            ExternalId = externalId,
-            Email = email,
-            DisplayName = principal.FindFirstValue("name")
-                ?? principal.FindFirstValue(ClaimTypes.Name)
-                ?? principal.FindFirstValue("displayName")
-                ?? email,
-            IsAdmin = !await _db.Users.AnyAsync(ct),
-            CreatedAt = DateTime.UtcNow
-        };
-
-        _db.Users.Add(newUserEntity);
-        await _db.SaveChangesAsync(ct);
-
-        return new PublicUserDto(newUserEntity.Id, newUserEntity.Email, newUserEntity.DisplayName, newUserEntity.IsAdmin);
+        var user = await _userRepository.ResolveUserAsync(externalId, email, displayName, ct);
+        return ToPublicUserDto(user, user.IsAdmin);
     }
 }

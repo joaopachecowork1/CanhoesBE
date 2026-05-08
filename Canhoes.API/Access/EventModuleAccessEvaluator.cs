@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Canhoes.Api.Access;
 
-internal enum EventModuleKey
+public enum EventModuleKey
 {
     Feed,
     SecretSanta,
@@ -20,7 +20,7 @@ internal enum EventModuleKey
     Admin
 }
 
-internal sealed record EventModuleAccessSnapshot(
+public sealed record EventModuleAccessSnapshot(
     string EventId,
     EventPhaseEntity? ActivePhase,
     CanhoesEventStateEntity State,

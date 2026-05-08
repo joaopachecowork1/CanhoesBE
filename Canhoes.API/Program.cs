@@ -11,6 +11,8 @@ using Canhoes.Api.Auth;
 using Canhoes.Api.Data;
 using Canhoes.Api.Middleware;
 using Canhoes.Api.Services;
+using Canhoes.Api.Repositories;
+using Canhoes.Api.Access;
 using Canhoes.Api.Startup;
 using Serilog;
 using Serilog.Events;
@@ -84,7 +86,19 @@ builder.Services.AddDbContext<CanhoesDbContext>(opt =>
     opt.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 });
 
-builder.Services.AddScoped<SecretSantaService>();
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IEventRepository, EventRepository>();
+builder.Services.AddScoped<IAwardRepository, AwardRepository>();
+builder.Services.AddScoped<ISecretSantaRepository, SecretSantaRepository>();
+builder.Services.AddScoped<IFeedRepository, FeedRepository>();
+
+builder.Services.AddScoped<ISecretSantaService, SecretSantaService>();
+builder.Services.AddScoped<IEventService, EventService>();
+builder.Services.AddScoped<IAwardService, AwardService>();
+builder.Services.AddScoped<IMemberService, MemberService>();
+builder.Services.AddScoped<IModuleAccessService, ModuleAccessService>();
+builder.Services.AddScoped<IFeedService, FeedService>();
+
 
 // --- AUTH (Google id_token) ---
 var useMockAuth = builder.Environment.IsDevelopment()

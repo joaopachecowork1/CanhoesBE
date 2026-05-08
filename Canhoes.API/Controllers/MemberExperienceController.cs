@@ -4,29 +4,33 @@ using Canhoes.Api.Media;
 using Canhoes.Api.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using static Canhoes.Api.Controllers.EventsControllerMappers;
+using static Canhoes.Api.Mappers.EventMappers;
+using Canhoes.Api.Data;
+using Canhoes.Api.Services;
+using Canhoes.Api.Auth;
 
 namespace Canhoes.Api.Controllers;
 
-public sealed partial class EventsController
+[ApiController]
+public class MemberExperienceController : EventControllerBase
 {
+    private readonly IMemberService _memberService;
+
+    public MemberExperienceController(
+        IMemberService memberService,
+        CanhoesDbContext db, 
+        IWebHostEnvironment? env = null) 
+        : base(db, env: env)
+    {
+        _memberService = memberService;
+    }
     [HttpGet("{eventId}/members")]
     public async Task<ActionResult<List<PublicUserDto>>> GetMembers([FromRoute] string eventId, CancellationToken ct)
     {
         var (_, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Wishlist, ct);
         if (accessError is not null) return accessError;
 
-        var memberDirectory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var members = memberDirectory.Members
-            .Where(member => memberDirectory.UsersById.ContainsKey(member.UserId))
-            .OrderByDescending(member => member.Role == EventRoles.Admin)
-            .ThenBy(member => GetUserName(memberDirectory.UsersById[member.UserId]))
-            .Select(member => ToPublicUserDto(
-                memberDirectory.UsersById[member.UserId],
-                member.Role == EventRoles.Admin))
-            .ToList();
-
-        return Ok(members);
+        return Ok(await _memberService.GetMembersAsync(eventId, ct));
     }
 
     [HttpGet("{eventId}/measures")]
@@ -35,18 +39,7 @@ public sealed partial class EventsController
         var (_, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Measures, ct);
         if (accessError is not null) return accessError;
 
-        var measures = await _db.Measures
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.IsActive)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .Select(x => new GalaMeasureDto(
-                x.Id,
-                x.Text,
-                x.IsActive,
-                new DateTimeOffset(x.CreatedAtUtc, TimeSpan.Zero)))
-            .ToListAsync(ct);
-
-        return Ok(measures);
+        return Ok(await _memberService.GetMeasuresAsync(eventId, ct));
     }
 
     [HttpPost("{eventId}/measures/proposals")]
@@ -59,23 +52,7 @@ public sealed partial class EventsController
         if (accessError is not null) return accessError;
         if (string.IsNullOrWhiteSpace(request.Text)) return BadRequest("Text is required.");
 
-        var activeProposalsPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Proposals, ct);
-        if (!IsPhaseOpen(activeProposalsPhase)) return BadRequest("Proposals are closed.");
-
-        var proposal = new MeasureProposalEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            EventId = eventId,
-            ProposedByUserId = userAccess.UserId,
-            Text = request.Text.Trim(),
-            Status = ProposalStatus.Pending,
-            CreatedAtUtc = DateTime.UtcNow
-        };
-
-        _db.MeasureProposals.Add(proposal);
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToMeasureProposalDto(proposal));
+        return Ok(await _memberService.CreateMeasureProposalAsync(eventId, userAccess.UserId, request, ct));
     }
 
     [HttpGet("{eventId}/results")]
@@ -179,23 +156,7 @@ public sealed partial class EventsController
         var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Nominees, ct);
         if (accessError is not null) return accessError;
 
-        var latestNomination = await _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.SubmittedByUserId == userAccess.UserId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .FirstOrDefaultAsync(ct);
-
-        if (latestNomination is null)
-        {
-            return Ok(new MyNominationStatusDto(false, null, null, null, null));
-        }
-
-        return Ok(new MyNominationStatusDto(
-            true,
-            latestNomination.CategoryId,
-            latestNomination.Status,
-            latestNomination.CategoryId,
-            latestNomination.Title));
+        return Ok(await _memberService.GetMyNominationStatusAsync(eventId, userAccess.UserId, ct));
     }
 
     [HttpGet("{eventId}/nominations/approved")]
@@ -204,13 +165,7 @@ public sealed partial class EventsController
         var (_, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Nominees, ct);
         if (accessError is not null) return accessError;
 
-        var nominees = await _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.Status == ProposalStatus.Approved)
-            .OrderBy(x => x.Title)
-            .ToListAsync(ct);
-
-        return Ok(nominees.Select(MapNomineeDto).ToList());
+        return Ok(await _memberService.GetApprovedNomineesAsync(eventId, ct));
     }
 
     [HttpPost("{eventId}/nominations")]
@@ -225,46 +180,7 @@ public sealed partial class EventsController
         if (accessError is not null) return accessError;
         if (string.IsNullOrWhiteSpace(request.Title)) return BadRequest("Title is required.");
 
-        var activeProposalsPhase = await GetActivePhaseAsync(eventId, EventPhaseTypes.Proposals, ct);
-        if (!IsPhaseOpen(activeProposalsPhase)) return BadRequest("Nominations are closed.");
-
-        if (!string.IsNullOrWhiteSpace(request.CategoryId))
-        {
-            var categoryExists = await _db.AwardCategories
-                .AsNoTracking()
-                .AnyAsync(x => x.Id == request.CategoryId && x.EventId == eventId, ct);
-            if (!categoryExists) return BadRequest("Invalid category.");
-
-            var hasExistingNominationForCategory = await _db.Nominees
-                .AsNoTracking()
-                .AnyAsync(x =>
-                    x.EventId == eventId
-                    && x.SubmittedByUserId == userAccess.UserId
-                    && x.CategoryId == request.CategoryId
-                    && x.Status != ProposalStatus.Rejected,
-                    ct);
-            if (hasExistingNominationForCategory)
-            {
-                return BadRequest("You already have a nomination for this category.");
-            }
-        }
-
-        var nominee = new NomineeEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            EventId = eventId,
-            CategoryId = string.IsNullOrWhiteSpace(request.CategoryId) ? null : request.CategoryId.Trim(),
-            Title = request.Title.Trim(),
-            SubmissionKind = requestedKind,
-            SubmittedByUserId = userAccess.UserId,
-            Status = ProposalStatus.Pending,
-            CreatedAtUtc = DateTime.UtcNow
-        };
-
-        _db.Nominees.Add(nominee);
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(MapNomineeDto(nominee));
+        return Ok(await _memberService.CreateNominationAsync(eventId, userAccess.UserId, request, ct));
     }
 
     [HttpPost("{eventId}/nominations/{nomineeId}/upload")]
@@ -277,19 +193,12 @@ public sealed partial class EventsController
     {
         if (file is null || file.Length <= 0) return BadRequest("File is required.");
 
-        var nominee = await _db.Nominees
-            .FirstOrDefaultAsync(x => x.Id == nomineeId && x.EventId == eventId, ct);
+        // Minimal check before upload logic in service
+        var imageUrl = await SaveSingleImageAsync(file, "canhoes", "nominees", ct);
+        var nominee = await _memberService.UpdateNomineeImageAsync(eventId, nomineeId, HttpContext.GetUserId(), HttpContext.User.IsInRole("Admin"), imageUrl, ct);
+        
         if (nominee is null) return NotFound();
-
-        var requestedModule = nominee.SubmissionKind == "stickers" ? EventModuleKey.Stickers : EventModuleKey.Nominees;
-        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, requestedModule, ct);
-        if (accessError is not null) return accessError;
-        if (nominee.SubmittedByUserId != userAccess.UserId && !userAccess.IsAdmin) return Forbid();
-
-        nominee.ImageUrl = await SaveSingleImageAsync(file, "canhoes", "nominees", ct);
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(MapNomineeDto(nominee));
+        return Ok(nominee);
     }
 
     [HttpPost("{eventId}/wishlist/{itemId}/image")]
@@ -302,34 +211,18 @@ public sealed partial class EventsController
     {
         if (file is null || file.Length <= 0) return BadRequest("File is required.");
 
-        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Wishlist, ct);
-        if (accessError is not null) return accessError;
+        var imageUrl = await SaveSingleImageAsync(file, "canhoes", "wishlist", ct);
+        var item = await _memberService.UpdateWishlistImageAsync(eventId, itemId, HttpContext.GetUserId(), HttpContext.User.IsInRole("Admin"), imageUrl, ct);
 
-        var wishlistItem = await _db.WishlistItems
-            .FirstOrDefaultAsync(x => x.Id == itemId && x.EventId == eventId, ct);
-        if (wishlistItem is null) return NotFound();
-        if (wishlistItem.UserId != userAccess.UserId && !userAccess.IsAdmin) return Forbid();
-
-        wishlistItem.ImageUrl = await SaveSingleImageAsync(file, "canhoes", "wishlist", ct);
-        wishlistItem.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(ToEventWishlistItemDto(wishlistItem));
+        if (item is null) return NotFound();
+        return Ok(item);
     }
 
     [HttpDelete("{eventId}/wishlist/{itemId}")]
     public async Task<ActionResult> DeleteWishlistItem([FromRoute] string eventId, [FromRoute] string itemId, CancellationToken ct)
     {
-        var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Wishlist, ct);
-        if (accessError is not null) return accessError;
-
-        var wishlistItem = await _db.WishlistItems
-            .FirstOrDefaultAsync(x => x.Id == itemId && x.EventId == eventId, ct);
-        if (wishlistItem is null) return NotFound();
-        if (wishlistItem.UserId != userAccess.UserId && !userAccess.IsAdmin) return Forbid();
-
-        _db.WishlistItems.Remove(wishlistItem);
-        await _db.SaveChangesAsync(ct);
+        var success = await _memberService.DeleteWishlistItemAsync(eventId, itemId, HttpContext.GetUserId(), HttpContext.User.IsInRole("Admin"), ct);
+        if (!success) return NotFound();
         return NoContent();
     }
 
@@ -386,9 +279,3 @@ public sealed partial class EventsController
     }
 }
 
-public record MyNominationStatusDto(
-    bool HasNomination,
-    string? CategoryId,
-    string? Status,
-    string? NomineeId,
-    string? NomineeTitle);
