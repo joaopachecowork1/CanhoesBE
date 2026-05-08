@@ -3,6 +3,7 @@ using Canhoes.Api.Controllers;
 using Canhoes.Api.Data;
 using Canhoes.Api.DTOs;
 using Canhoes.Api.Models;
+using Canhoes.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
