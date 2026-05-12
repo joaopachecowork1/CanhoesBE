@@ -14,7 +14,7 @@ public enum AwardCategoryKind
 public sealed class AwardCategoryEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -43,7 +43,7 @@ public sealed class AwardCategoryEntity
 public sealed class NomineeEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -74,7 +74,7 @@ public sealed class NomineeEntity
 public sealed class CategoryProposalEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -98,7 +98,7 @@ public sealed class CategoryProposalEntity
 public sealed class GalaMeasureEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -114,7 +114,7 @@ public sealed class GalaMeasureEntity
 public sealed class MeasureProposalEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -135,7 +135,7 @@ public sealed class MeasureProposalEntity
 public sealed class VoteEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -160,7 +160,7 @@ public sealed class VoteEntity
 public sealed class UserVoteEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -211,7 +211,7 @@ public sealed class CanhoesEventStateEntity
 public sealed class WishlistItemEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string EventId { get; set; } = EventContextDefaults.DefaultEventId;
@@ -235,7 +235,7 @@ public sealed class WishlistItemEntity
 public sealed class SecretSantaDrawEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     // Example: "canhoes2026"
     [Required]
@@ -250,7 +250,7 @@ public sealed class SecretSantaDrawEntity
 public sealed class SecretSantaAssignmentEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string DrawId { get; set; } = string.Empty;

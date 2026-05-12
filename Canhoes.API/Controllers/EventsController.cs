@@ -6,6 +6,7 @@ using Canhoes.Api.Services;
 using Canhoes.Api.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.AspNetCore.Hosting;
@@ -153,8 +154,9 @@ public sealed class EventsController : EventControllerBase
     /// <summary>
     /// Retrieves a paged list of active award categories for the specified event.
     /// </summary>
-    [HttpGet("{eventId}/categories")]
-    public async Task<ActionResult<PagedResult<AwardCategoryDto>>> GetCategories(
+        [HttpGet("{eventId}/categories")]
+        [OutputCache(PolicyName = "Categories", VaryByQueryKeys = new[] { "skip", "take" })]
+        public async Task<ActionResult<PagedResult<AwardCategoryDto>>> GetCategories(
         [FromRoute] string eventId,
         [FromQuery] int skip = 0,
         [FromQuery] int take = 50,

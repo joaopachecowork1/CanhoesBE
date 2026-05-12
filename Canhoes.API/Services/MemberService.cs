@@ -52,7 +52,7 @@ public sealed class MemberService : IMemberService
     {
         var proposal = new MeasureProposalEntity
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = Guid.NewGuid().ToString("N"),
             EventId = eventId,
             ProposedByUserId = userId,
             Text = request.Text.Trim(),
@@ -163,7 +163,7 @@ public sealed class MemberService : IMemberService
     {
         var nominee = new NomineeEntity
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = Guid.NewGuid().ToString("N"),
             EventId = eventId,
             CategoryId = string.IsNullOrWhiteSpace(request.CategoryId) ? null : request.CategoryId.Trim(),
             Title = request.Title.Trim(),

@@ -20,7 +20,7 @@ internal static class TestData
         => db.Events.Add(new EventEntity { Id = eventId, Name = eventId, IsActive = isActive, CreatedAtUtc = DateTime.UtcNow });
 
     public static void SeedMember(CanhoesDbContext db, string eventId, Guid userId)
-        => db.EventMembers.Add(new EventMemberEntity { Id = Guid.NewGuid().ToString(), EventId = eventId, UserId = userId, Role = EventRoles.User, JoinedAtUtc = DateTime.UtcNow });
+        => db.EventMembers.Add(new EventMemberEntity { Id = Guid.NewGuid().ToString("N"), EventId = eventId, UserId = userId, Role = EventRoles.User, JoinedAtUtc = DateTime.UtcNow });
 
     public static void SeedUser(CanhoesDbContext db, Guid userId, string email, string? displayName = null, bool isAdmin = false)
         => db.Users.Add(new UserEntity { Id = userId, ExternalId = $"ext-{userId:N}", Email = email, DisplayName = displayName, IsAdmin = isAdmin, CreatedAt = DateTime.UtcNow });

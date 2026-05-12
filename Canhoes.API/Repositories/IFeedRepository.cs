@@ -27,5 +27,12 @@ public interface IFeedRepository
     Task DeleteCommentReactionAsync(HubPostCommentReactionEntity reaction, CancellationToken ct);
 
     Task DeletePostAsync(HubPostEntity post, CancellationToken ct);
+
+    // Polls
+    Task<bool> PollExistsAsync(string postId, CancellationToken ct);
+    Task<bool> PollOptionExistsAsync(string optionId, string postId, CancellationToken ct);
+    Task<HubPostPollVoteEntity?> GetPollVoteAsync(string postId, Guid userId, CancellationToken ct);
+    Task AddPollVoteAsync(HubPostPollVoteEntity vote, CancellationToken ct);
+
     Task SaveChangesAsync(CancellationToken ct);
 }

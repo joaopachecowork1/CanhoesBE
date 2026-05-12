@@ -49,7 +49,7 @@ public class FeedIntegrationTests : IClassFixture<CanhoesWebApplicationFactory>
             // Seed member
             db.EventMembers.Add(new EventMemberEntity 
             { 
-                Id = Guid.NewGuid().ToString(), 
+                Id = Guid.NewGuid().ToString("N"), 
                 EventId = eventId, 
                 UserId = user.Id, 
                 Role = "user", 

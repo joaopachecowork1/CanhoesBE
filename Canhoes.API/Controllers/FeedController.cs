@@ -18,16 +18,14 @@ namespace Canhoes.Api.Controllers;
 public class FeedController : EventControllerBase
 {
     private readonly IFeedService _feedService;
-    private readonly IHubContext<Canhoes.Api.Hubs.EventHub> _hub;
 
     public FeedController(
         IFeedService feedService,
         CanhoesDbContext db, 
         IHubContext<Canhoes.Api.Hubs.EventHub> hub) 
-        : base(db) 
+        : base(db, hub: hub) 
     { 
         _feedService = feedService;
-        _hub = hub; 
     }
 
     private const string DefaultFeedReactionEmoji = "\u2764\uFE0F";
@@ -117,35 +115,10 @@ public class FeedController : EventControllerBase
         var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (accessError is not null) return accessError;
 
-        var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (!isPostExisting) return NotFound();
+        var result = await _feedService.ToggleReactionAsync(eventId, postId, userAccess.UserId, reactionEmoji, ct);
+        if (result is null) return NotFound();
 
-        var existingReaction = await _db.HubPostReactions
-            .SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userAccess.UserId && x.Emoji == reactionEmoji, ct);
-
-        var isNowActive = existingReaction is null;
-        if (isNowActive)
-        {
-            await AddPostEmojiReactionAsync(postId, userAccess.UserId, reactionEmoji);
-        }
-        else
-        {
-            _db.HubPostReactions.Remove(existingReaction!);
-        }
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { emoji = reactionEmoji, active = isNowActive });
-    }
-
-    private async Task AddPostEmojiReactionAsync(string postId, Guid userId, string emoji)
-    {
-        await _db.HubPostReactions.AddAsync(new HubPostReactionEntity
-        {
-            PostId = postId,
-            UserId = userId,
-            Emoji = emoji,
-            CreatedAtUtc = DateTime.UtcNow
-        });
+        return Ok(result);
     }
 
     /// <summary>
@@ -162,13 +135,7 @@ public class FeedController : EventControllerBase
         var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (accessError is not null) return accessError;
 
-        var commentDtos = await LoadFeedCommentDtosAsync(postId, userAccess.UserId, ct);
-        if (commentDtos.Count == 0)
-        {
-            var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
-            if (!isPostExisting) return NotFound();
-        }
-
+        var commentDtos = await _feedService.GetCommentsAsync(eventId, postId, userAccess.UserId, ct);
         return Ok(commentDtos);
     }
 
@@ -210,16 +177,9 @@ public class FeedController : EventControllerBase
         var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (accessError is not null) return accessError;
 
-        var targetComment = await _db.HubPostComments
-            .Include(x => x.Post)
-            .FirstOrDefaultAsync(x => x.Id == commentId && x.PostId == postId && x.Post.EventId == eventId, ct);
-        if (targetComment is null) return NotFound();
-        
-        var canUserDeleteComment = targetComment.UserId == userAccess.UserId || userAccess.IsAdmin;
-        if (!canUserDeleteComment) return Forbid();
+        var deleted = await _feedService.DeleteCommentAsync(eventId, postId, commentId, userAccess.UserId, userAccess.IsAdmin, ct);
+        if (!deleted) return NotFound();
 
-        _db.HubPostComments.Remove(targetComment);
-        await _db.SaveChangesAsync(ct);
         return NoContent();
     }
 
@@ -235,39 +195,11 @@ public class FeedController : EventControllerBase
         var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (accessError is not null) return accessError;
 
-        var isCommentValid = await _db.HubPostComments
-            .AsNoTracking()
-            .AnyAsync(x => x.Id == commentId && x.PostId == postId && x.Post.EventId == eventId, ct);
-        if (!isCommentValid) return NotFound();
-
         var reactionEmoji = NormalizeFeedReactionEmoji(reactionRequest?.Emoji);
-        var existingReaction = await _db.HubPostCommentReactions
-            .SingleOrDefaultAsync(x => x.CommentId == commentId && x.UserId == userAccess.UserId && x.Emoji == reactionEmoji, ct);
+        var result = await _feedService.ToggleCommentReactionAsync(eventId, postId, commentId, userAccess.UserId, reactionEmoji, ct);
+        if (result is null) return NotFound();
 
-        var isNowActive = existingReaction is null;
-        if (isNowActive)
-        {
-            await AddCommentReactionAsync(commentId, userAccess.UserId, reactionEmoji);
-        }
-        else
-        {
-            _db.HubPostCommentReactions.Remove(existingReaction!);
-        }
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(new { emoji = reactionEmoji, active = isNowActive });
-    }
-
-    private async Task AddCommentReactionAsync(string commentId, Guid userId, string emoji)
-    {
-        await _db.HubPostCommentReactions.AddAsync(new HubPostCommentReactionEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            CommentId = commentId,
-            UserId = userId,
-            Emoji = emoji,
-            CreatedAtUtc = DateTime.UtcNow
-        });
+        return Ok(result);
     }
 
     /// <summary>
@@ -282,43 +214,12 @@ public class FeedController : EventControllerBase
         var (userAccess, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Feed, ct);
         if (accessError is not null) return accessError;
 
-        var isPollExisting = await _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
-        var isPostExisting = await _db.HubPosts.AsNoTracking().AnyAsync(x => x.Id == postId && x.EventId == eventId, ct);
+        var result = await _feedService.VotePollAsync(eventId, postId, userAccess.UserId, voteRequest.OptionId.Trim(), ct);
+        if (result is null) return NotFound();
 
-        if (!isPollExisting || !isPostExisting) return NotFound();
+        await NotifyPollVotedAsync(eventId, postId, voteRequest.OptionId.Trim(), ct);
 
-        var normalizedOptionId = voteRequest.OptionId.Trim();
-        var isOptionValid = await _db.HubPostPollOptions.AsNoTracking().AnyAsync(x => x.Id == normalizedOptionId && x.PostId == postId, ct);
-        if (!isOptionValid) return BadRequest("Invalid optionId.");
-
-        var existingPollVote = await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userAccess.UserId, ct);
-        if (existingPollVote is null)
-        {
-            await CreatePollVoteAsync(postId, userAccess.UserId, normalizedOptionId);
-        }
-        else
-        {
-            existingPollVote.OptionId = normalizedOptionId;
-            existingPollVote.CreatedAtUtc = DateTime.UtcNow;
-        }
-
-        await _db.SaveChangesAsync(ct);
-
-        await NotifyPollVotedAsync(eventId, postId, normalizedOptionId, ct);
-
-        return Ok(new { optionId = normalizedOptionId });
-    }
-
-    private async Task CreatePollVoteAsync(string postId, Guid userId, string optionId)
-    {
-        await _db.HubPostPollVotes.AddAsync(new HubPostPollVoteEntity
-        {
-            Id = Guid.NewGuid().ToString(),
-            PostId = postId,
-            UserId = userId,
-            OptionId = optionId,
-            CreatedAtUtc = DateTime.UtcNow
-        });
+        return Ok(result);
     }
 
     private async Task NotifyPollVotedAsync(string eventId, string postId, string optionId, CancellationToken ct)
@@ -338,13 +239,10 @@ public class FeedController : EventControllerBase
         var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (accessError is not null) return accessError;
 
-        var targetPost = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (targetPost is null) return NotFound();
+        var pinned = await _feedService.TogglePinAsync(eventId, postId, isAdmin: true, ct);
+        if (!pinned) return NotFound();
 
-        targetPost.IsPinned = !targetPost.IsPinned;
-        await _db.SaveChangesAsync(ct);
-
-        return Ok(new { pinned = targetPost.IsPinned });
+        return Ok(new { pinned });
     }
 
     /// <summary>
@@ -358,11 +256,8 @@ public class FeedController : EventControllerBase
         var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct, requireManage: true);
         if (accessError is not null) return accessError;
 
-        var targetPost = await _db.HubPosts.FirstOrDefaultAsync(x => x.Id == postId && x.EventId == eventId, ct);
-        if (targetPost is null) return NotFound();
-
-        _db.HubPosts.Remove(targetPost);
-        await _db.SaveChangesAsync(ct);
+        var deleted = await _feedService.DeletePostAsync(eventId, postId, isAdmin: true, ct);
+        if (!deleted) return NotFound();
 
         return NoContent();
     }
@@ -385,89 +280,6 @@ public class FeedController : EventControllerBase
     // ========================================================================
     // FEED SUPPORT METHODS
     // ========================================================================
-
-    private async Task<List<HubCommentDto>> LoadFeedCommentDtosAsync(string postId, Guid userId, CancellationToken ct)
-    {
-        var comments = await _db.HubPostComments
-            .AsNoTracking()
-            .Where(x => x.PostId == postId)
-            .OrderBy(x => x.CreatedAtUtc)
-            .ToListAsync(ct);
-
-        if (comments.Count == 0) return new List<HubCommentDto>();
-
-        var commentIds = comments.Select(c => c.Id).ToList();
-        var allReactions = await _db.HubPostCommentReactions
-            .AsNoTracking()
-            .Where(x => commentIds.Contains(x.CommentId))
-            .Select(x => new { x.CommentId, x.UserId, x.Emoji })
-            .ToListAsync(ct);
-
-        // Pre-group reactions by comment to avoid N+1 LINQ iterations
-        var reactionsByComment = allReactions
-            .GroupBy(r => r.CommentId)
-            .ToDictionary(
-                g => g.Key,
-                g => g.GroupBy(r => r.Emoji)
-                    .ToDictionary(x => x.Key, x => x.Count()));
-
-        var userIds = comments.Select(c => c.UserId).Distinct().ToList();
-        var usersLookupTable = await _db.Users.AsNoTracking()
-            .Where(u => userIds.Contains(u.Id))
-            .Select(u => new { u.Id, Name = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName! })
-            .ToDictionaryAsync(x => x.Id, x => x.Name, ct);
-
-        return comments.Select(comment =>
-        {
-            var commentReactions = reactionsByComment.TryGetValue(comment.Id, out var r)
-                ? r
-                : new Dictionary<string, int>();
-
-            var myReactionsOnComment = userId == Guid.Empty
-                ? new List<string>()
-                : allReactions
-                    .Where(r => r.CommentId == comment.Id && r.UserId == userId)
-                    .Select(r => r.Emoji)
-                    .Distinct()
-                    .ToList();
-
-            return new HubCommentDto(
-                comment.Id,
-                comment.PostId,
-                comment.UserId,
-                usersLookupTable.TryGetValue(comment.UserId, out var userName) ? userName : "Unknown",
-                comment.Text,
-                comment.CreatedAtUtc,
-                commentReactions,
-                myReactionsOnComment
-            );
-        }).ToList();
-    }
-
-    private async Task<HubCommentDto> BuildCreatedFeedCommentDtoAsync(
-        HubPostCommentEntity comment,
-        IReadOnlyDictionary<Guid, string> userLookup,
-        CancellationToken ct)
-    {
-        // Try lookup first; fall back to single query only if user is not in the batch
-        var authorDisplayName = userLookup.TryGetValue(comment.UserId, out var name)
-            ? name
-            : await _db.Users.AsNoTracking()
-                .Where(u => u.Id == comment.UserId)
-                .Select(u => string.IsNullOrWhiteSpace(u.DisplayName) ? u.Email : u.DisplayName!)
-                .SingleOrDefaultAsync(ct)
-            ?? "Unknown";
-
-        return new HubCommentDto(
-            comment.Id,
-            comment.PostId,
-            comment.UserId,
-            authorDisplayName,
-            comment.Text,
-            comment.CreatedAtUtc,
-            new Dictionary<string, int>(),
-            new List<string>());
-    }
 
     private async Task<List<string>> SaveFeedUploadedFilesAsync(IFormFileCollection files, Guid userId, CancellationToken ct)
     {
@@ -498,7 +310,7 @@ public class FeedController : EventControllerBase
 
             _db.HubPostMedia.Add(new HubPostMediaEntity
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid().ToString("N"),
                 Url = fileUrl,
                 PostId = null,
                 OriginalFileName = file.FileName,

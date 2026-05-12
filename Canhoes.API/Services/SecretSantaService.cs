@@ -107,7 +107,7 @@ public sealed class SecretSantaService : ISecretSantaService
 
             var draw = new SecretSantaDrawEntity
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid().ToString("N"),
                 EventCode = eventCode,
                 CreatedAtUtc = DateTime.UtcNow,
                 CreatedByUserId = createdByUserId,
@@ -121,7 +121,7 @@ public sealed class SecretSantaService : ISecretSantaService
             {
                 assignments.Add(new SecretSantaAssignmentEntity
                 {
-                    Id = Guid.NewGuid().ToString(),
+                    Id = Guid.NewGuid().ToString("N"),
                     DrawId = draw.Id,
                     GiverUserId = participants[i].Id,
                     ReceiverUserId = shuffled[i].Id,

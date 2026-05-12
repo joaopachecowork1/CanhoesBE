@@ -148,7 +148,7 @@ public sealed class FeedService : IFeedService
 
         var comment = new HubPostCommentEntity
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = Guid.NewGuid().ToString("N"),
             PostId = postId,
             UserId = userId,
             Text = text.Trim(),
@@ -196,7 +196,7 @@ public sealed class FeedService : IFeedService
         {
             await _feedRepository.AddCommentReactionAsync(new HubPostCommentReactionEntity
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid().ToString("N"),
                 CommentId = commentId,
                 UserId = userId,
                 Emoji = emoji,
@@ -214,7 +214,32 @@ public sealed class FeedService : IFeedService
 
     public async Task<object> VotePollAsync(string eventId, string postId, Guid userId, string optionId, CancellationToken ct)
     {
-        // Poll logic here
+        var post = await _feedRepository.GetPostAsync(postId, eventId, ct);
+        if (post is null) return null!;
+
+        var pollExists = await _feedRepository.PollExistsAsync(postId, ct);
+        var optionValid = await _feedRepository.PollOptionExistsAsync(optionId, postId, ct);
+        if (!pollExists || !optionValid) return null!;
+
+        var existingVote = await _feedRepository.GetPollVoteAsync(postId, userId, ct);
+        if (existingVote is not null)
+        {
+            existingVote.OptionId = optionId;
+            existingVote.CreatedAtUtc = DateTime.UtcNow;
+        }
+        else
+        {
+            await _feedRepository.AddPollVoteAsync(new HubPostPollVoteEntity
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                PostId = postId,
+                UserId = userId,
+                OptionId = optionId,
+                CreatedAtUtc = DateTime.UtcNow
+            }, ct);
+        }
+
+        await _feedRepository.SaveChangesAsync(ct);
         return new { optionId };
     }
 

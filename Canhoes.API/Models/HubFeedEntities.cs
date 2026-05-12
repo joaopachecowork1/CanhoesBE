@@ -14,7 +14,7 @@ namespace Canhoes.Api.Models;
 public sealed class HubPostEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     [MaxLength(64)]
@@ -44,7 +44,7 @@ public sealed class HubPostEntity
 public sealed class HubPostLikeEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string PostId { get; set; } = string.Empty;
@@ -58,7 +58,7 @@ public sealed class HubPostLikeEntity
 public sealed class HubPostDownvoteEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string PostId { get; set; } = string.Empty;
@@ -72,7 +72,7 @@ public sealed class HubPostDownvoteEntity
 public sealed class HubPostCommentEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string PostId { get; set; } = string.Empty;
@@ -96,7 +96,7 @@ public sealed class HubPostCommentEntity
 public sealed class HubPostReactionEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string PostId { get; set; } = string.Empty;
@@ -115,7 +115,7 @@ public sealed class HubPostReactionEntity
 public sealed class HubPostCommentReactionEntity
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
     public string CommentId { get; set; } = string.Empty;

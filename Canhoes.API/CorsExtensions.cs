@@ -3,6 +3,7 @@ global using Canhoes.Api.DTOs;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using System.Collections.Concurrent;
 using System.Net;
 
 namespace Canhoes.Api
@@ -33,12 +34,14 @@ namespace Canhoes.Api
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
+            var corsCache = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
             services.AddCors(opt =>
             {
                 opt.AddPolicy(PolicyName, policy =>
                 {
                     policy.SetIsOriginAllowed(origin =>
-                          IsAllowedOrigin(origin, allowedOrigins, allowedOriginSuffixes))
+                          corsCache.GetOrAdd(origin, o => IsAllowedOrigin(o, allowedOrigins, allowedOriginSuffixes)))
                         .AllowAnyHeader()
                         .AllowAnyMethod()
                         .AllowCredentials();

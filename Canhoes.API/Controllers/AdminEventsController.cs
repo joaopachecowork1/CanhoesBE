@@ -5,6 +5,7 @@ using Canhoes.Api.Models;
 using Canhoes.Api.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 using Canhoes.Api.Services;
 using Canhoes.Api.Mappers;
@@ -40,8 +41,9 @@ public sealed class AdminEventsController : EventControllerBase
     /// <param name="eventId">The event identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A list of award categories.</returns>
-    [HttpGet("{eventId}/admin/categories")]
-    public async Task<ActionResult<List<AwardCategoryDto>>> AdminGetCategories([FromRoute] string eventId, CancellationToken ct)
+        [HttpGet("{eventId}/admin/categories")]
+        [OutputCache(PolicyName = "Categories")]
+        public async Task<ActionResult<List<AwardCategoryDto>>> AdminGetCategories([FromRoute] string eventId, CancellationToken ct)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } accessError) return accessError;
         return Ok(await _awardService.GetAdminCategoriesAsync(eventId, ct));
@@ -122,8 +124,9 @@ public sealed class AdminEventsController : EventControllerBase
     /// <param name="eventId">The event identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The administrative state of the event.</returns>
-    [HttpGet("{eventId}/admin/state")]
-    public async Task<ActionResult<EventAdminStateDto>> GetAdminState([FromRoute] string eventId, CancellationToken ct)
+        [HttpGet("{eventId}/admin/state")]
+        [OutputCache(PolicyName = "EventState")]
+        public async Task<ActionResult<EventAdminStateDto>> GetAdminState([FromRoute] string eventId, CancellationToken ct)
     {
         if (await RequireManageAccessAsync(eventId, ct) is { } accessError) return accessError;
 
@@ -523,7 +526,7 @@ public sealed class AdminEventsController : EventControllerBase
 
         var galaMeasure = new GalaMeasureEntity
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = Guid.NewGuid().ToString("N"),
             EventId = eventId,
             Text = proposal.Text,
             IsActive = true,

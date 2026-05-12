@@ -387,5 +387,20 @@ public class CanhoesDbContext : DbContext
         modelBuilder.Entity<MeasureProposalEntity>()
             .HasIndex(x => x.ProposedByUserId)
             .HasDatabaseName("IX_MeasureProposals_ProposedByUserId");
+
+        // VoteEntity: queries filter by EventId + UserId (GetUserNomineeVotesAsync, CountSubmittedVotesAsync)
+        modelBuilder.Entity<VoteEntity>()
+            .HasIndex(x => new { x.EventId, x.UserId })
+            .HasDatabaseName("IX_Votes_EventId_UserId");
+
+        // UserVoteEntity: queries filter by EventId + VoterUserId (GetUserUserVotesAsync, CountSubmittedVotesAsync)
+        modelBuilder.Entity<UserVoteEntity>()
+            .HasIndex(x => new { x.EventId, x.VoterUserId })
+            .HasDatabaseName("IX_UserVotes_EventId_VoterUserId");
+
+        // UserVoteEntity: queries filter by EventId + CategoryId + VoterUserId (UpsertUserVoteAsync)
+        modelBuilder.Entity<UserVoteEntity>()
+            .HasIndex(x => new { x.EventId, x.CategoryId, x.VoterUserId })
+            .HasDatabaseName("IX_UserVotes_EventId_CategoryId_VoterUserId");
     }
 }

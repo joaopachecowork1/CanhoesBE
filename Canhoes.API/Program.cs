@@ -14,6 +14,7 @@ using Canhoes.Api.Services;
 using Canhoes.Api.Repositories;
 using Canhoes.Api.Access;
 using Canhoes.Api.Startup;
+using Npgsql;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Json;
@@ -327,7 +328,7 @@ app.UseAuthorization();
 // Output caching only after auth/user context is established
 app.UseOutputCache();
 
-app.MapGet("/health", async ([FromServices] Canhoes.Api.Data.CanhoesDbContext db, CancellationToken ct) =>
+app.MapGet("/health", async (CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(healthCheckCs))
     {
@@ -339,13 +340,29 @@ app.MapGet("/health", async ([FromServices] Canhoes.Api.Data.CanhoesDbContext db
         });
     }
 
-    var dbWorking = await db.Database.CanConnectAsync(ct);
-    return Results.Ok(new
+    try
     {
-        status = dbWorking ? "healthy" : "degraded",
-        database = dbWorking ? "connected" : "disconnected",
-        timestampUtc = DateTime.UtcNow
-    });
+        await using var conn = new Npgsql.NpgsqlConnection(healthCheckCs);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync(ct);
+        return Results.Ok(new
+        {
+            status = "healthy",
+            database = "connected",
+            timestampUtc = DateTime.UtcNow
+        });
+    }
+    catch
+    {
+        return Results.Ok(new
+        {
+            status = "degraded",
+            database = "disconnected",
+            timestampUtc = DateTime.UtcNow
+        });
+    }
 });
 
 // Admin performance metrics (requires authentication)

@@ -118,7 +118,7 @@ public class VotingController : EventControllerBase
         {
             existingUserVoteEntity = new UserVoteEntity
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid().ToString("N"),
                 EventId = eventId,
                 CategoryId = category.Id,
                 VoterUserId = userId,
@@ -162,7 +162,7 @@ public class VotingController : EventControllerBase
         {
             existingNomineeVoteEntity = new VoteEntity
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid().ToString("N"),
                 EventId = eventId,
                 CategoryId = category.Id,
                 NomineeId = approvedNomineeEntity.Id,

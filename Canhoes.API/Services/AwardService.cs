@@ -40,7 +40,7 @@ public sealed class AwardService : IAwardService
 
         var category = new AwardCategoryEntity
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = Guid.NewGuid().ToString("N"),
             EventId = eventId,
             Name = request.Name.Trim(),
             Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim(),
@@ -276,7 +276,7 @@ public sealed class AwardService : IAwardService
     {
         var proposal = new CategoryProposalEntity
         {
-            Id = Guid.NewGuid().ToString(),
+            Id = Guid.NewGuid().ToString("N"),
             EventId = eventId,
             ProposedByUserId = userId,
             Name = request.Name.Trim(),

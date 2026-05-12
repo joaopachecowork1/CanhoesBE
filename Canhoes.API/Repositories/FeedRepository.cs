@@ -96,6 +96,18 @@ public sealed class FeedRepository : IFeedRepository
         await Task.CompletedTask;
     }
 
+    public async Task<bool> PollExistsAsync(string postId, CancellationToken ct) =>
+        await _db.HubPostPolls.AsNoTracking().AnyAsync(x => x.PostId == postId, ct);
+
+    public async Task<bool> PollOptionExistsAsync(string optionId, string postId, CancellationToken ct) =>
+        await _db.HubPostPollOptions.AsNoTracking().AnyAsync(x => x.Id == optionId && x.PostId == postId, ct);
+
+    public async Task<HubPostPollVoteEntity?> GetPollVoteAsync(string postId, Guid userId, CancellationToken ct) =>
+        await _db.HubPostPollVotes.SingleOrDefaultAsync(x => x.PostId == postId && x.UserId == userId, ct);
+
+    public async Task AddPollVoteAsync(HubPostPollVoteEntity vote, CancellationToken ct) =>
+        await _db.HubPostPollVotes.AddAsync(vote, ct);
+
     public async Task SaveChangesAsync(CancellationToken ct) =>
         await _db.SaveChangesAsync(ct);
 }
