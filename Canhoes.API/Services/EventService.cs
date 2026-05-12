@@ -51,19 +51,24 @@ public sealed class EventService : IEventService
         var activeEvent = await _eventRepository.GetActiveEventAsync(ct);
         if (activeEvent is null) return null;
 
-        var overview = await GetEventOverviewAsync(activeEvent.Id, userId, isAdmin, ct);
-        if (overview is null) return null;
+        // These four calls have no data dependencies — run them in parallel
+        var eventId = activeEvent.Id;
+        var overviewTask = GetEventOverviewAsync(eventId, userId, isAdmin, ct);
+        var votingOverviewTask = GetVotingOverviewAsync(eventId, userId, ct);
+        var secretSantaOverviewTask = GetSecretSantaOverviewAsync(eventId, userId, ct);
+        var recentPostsTask = _feedService.GetRecentPostsAsync(eventId, userId, 5, ct);
 
-        var votingOverview = await GetVotingOverviewAsync(activeEvent.Id, userId, ct);
-        var secretSantaOverview = await GetSecretSantaOverviewAsync(activeEvent.Id, userId, ct);
-        var recentPosts = await _feedService.GetRecentPostsAsync(activeEvent.Id, userId, 5, ct);
+        await Task.WhenAll(overviewTask, votingOverviewTask, secretSantaOverviewTask, recentPostsTask);
+
+        var overview = overviewTask.Result;
+        if (overview is null) return null;
 
         return new EventHomeSnapshotDto(
             ToEventSummaryDto(activeEvent),
             overview,
-            votingOverview,
-            secretSantaOverview,
-            recentPosts
+            votingOverviewTask.Result,
+            secretSantaOverviewTask.Result,
+            recentPostsTask.Result
         );
     }
 

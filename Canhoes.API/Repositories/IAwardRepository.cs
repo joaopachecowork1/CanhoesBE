@@ -7,6 +7,7 @@ public interface IAwardRepository
     // Categories
     Task<AwardCategoryEntity?> GetCategoryAsync(string categoryId, string eventId, CancellationToken ct);
     Task<List<AwardCategoryEntity>> GetActiveCategoriesAsync(string eventId, CancellationToken ct);
+    Task<(List<AwardCategoryEntity> Items, int Total)> GetActiveCategoriesPagedAsync(string eventId, int skip, int take, CancellationToken ct);
     Task<int?> GetMaxSortOrderAsync(string eventId, CancellationToken ct);
     Task AddCategoryAsync(AwardCategoryEntity category, CancellationToken ct);
     Task<bool> CategoryExistsAsync(string eventId, string name, CancellationToken ct);

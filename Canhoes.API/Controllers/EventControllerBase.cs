@@ -64,11 +64,17 @@ public abstract class EventControllerBase : ControllerBase
         var (eventAccess, accessError) = await RequireEventAccessAsync(eventId, ct);
         if (accessError is not null) return (default!, default!, accessError);
 
+        var phases = await _db.EventPhases
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .ToListAsync(ct);
+
         var moduleAccessSnapshot = await EventModuleAccessEvaluator.EvaluateAsync(
             _db,
             eventId,
             eventAccess.UserId,
             eventAccess.IsAdmin,
+            phases,
             ct);
         if (!EventModuleAccessEvaluator.IsModuleEnabled(moduleAccessSnapshot.EffectiveModules, moduleKey))
         {
@@ -227,9 +233,12 @@ public abstract class EventControllerBase : ControllerBase
 
     protected async Task<int> CountSubmittedVotesAsync(Guid userId, IReadOnlyCollection<string> categoryIds, CancellationToken ct)
     {
-        var nv = await _db.Votes.CountAsync(x => categoryIds.Contains(x.CategoryId) && x.UserId == userId, ct);
-        var uv = await _db.UserVotes.CountAsync(x => categoryIds.Contains(x.CategoryId) && x.VoterUserId == userId, ct);
-        return nv + uv;
+        if (categoryIds.Count == 0) return 0;
+
+        var nomineeVotesTask = _db.Votes.CountAsync(x => categoryIds.Contains(x.CategoryId) && x.UserId == userId, ct);
+        var userVotesTask = _db.UserVotes.CountAsync(x => categoryIds.Contains(x.CategoryId) && x.VoterUserId == userId, ct);
+        await Task.WhenAll(nomineeVotesTask, userVotesTask);
+        return nomineeVotesTask.Result + userVotesTask.Result;
     }
 
     protected bool IsPhaseOpen(EventPhaseEntity? phase)

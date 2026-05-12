@@ -212,6 +212,8 @@ builder.Services.AddFrontendCors(builder.Configuration);
 // --- RATE LIMITING ---
 builder.Services.AddRateLimiter(options =>
 {
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
     options.AddFixedWindowLimiter("strict", opt =>
     {
         opt.Window = TimeSpan.FromSeconds(10);
@@ -223,6 +225,14 @@ builder.Services.AddRateLimiter(options =>
         opt.Window = TimeSpan.FromSeconds(10);
         opt.PermitLimit = 20;
         opt.QueueLimit = 5;
+    });
+
+    // Default fallback for all endpoints not explicitly decorated
+    options.AddFixedWindowLimiter("default", opt =>
+    {
+        opt.Window = TimeSpan.FromSeconds(10);
+        opt.PermitLimit = 100;
+        opt.QueueLimit = 0;
     });
 });
 
@@ -237,7 +247,7 @@ builder.Services.AddResponseCompression(options =>
 
 builder.Services.Configure<BrotliCompressionProviderOptions>(options =>
 {
-    options.Level = System.IO.Compression.CompressionLevel.Fastest;
+    options.Level = System.IO.Compression.CompressionLevel.Optimal;
 });
 
 builder.Services.Configure<GzipCompressionProviderOptions>(options =>
@@ -246,17 +256,21 @@ builder.Services.Configure<GzipCompressionProviderOptions>(options =>
 });
 
 // --- Output Caching for stable GET endpoints ---
+// No base policy — only cache explicitly via [OutputCache] attributes on specific endpoints
 builder.Services.AddOutputCache(options =>
 {
-    // Default: 30 seconds for all cached endpoints
-    options.AddBasePolicy(builder => builder.Expire(TimeSpan.FromSeconds(30)));
     // Categories: cache for 2 minutes (changes rarely)
     options.AddPolicy("Categories", builder => builder.Expire(TimeSpan.FromMinutes(2)));
     // Event state: cache for 15 seconds (changes during phase transitions)
     options.AddPolicy("EventState", builder => builder.Expire(TimeSpan.FromSeconds(15)));
+    // Admin official results: cache for 30 seconds
+    options.AddPolicy("AdminResults", builder => builder.Expire(TimeSpan.FromSeconds(30)));
 });
 
 var app = builder.Build();
+
+// Global error handling – must be first in the middleware pipeline.
+app.UseMiddleware<ErrorHandlingMiddleware>();
 
 // --- SECURITY HEADERS ---
 if (!app.Environment.IsDevelopment())
@@ -274,6 +288,9 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// Serve uploaded images (for Canhões do Ano) — before auth/compression to skip overhead
+app.UseStaticFiles();
+
 // Response compression MUST be before UseRouting to compress all responses
 app.UseResponseCompression();
 
@@ -285,9 +302,6 @@ app.Logger.LogInformation(
 
 app.UseFrontendCors();
 
-// Global error handling – must be first in the middleware pipeline.
-app.UseMiddleware<ErrorHandlingMiddleware>();
-
 // Performance logging – logs every request with duration.
 app.UseMiddleware<PerformanceLoggingMiddleware>();
 
@@ -296,9 +310,6 @@ app.UseMiddleware<PerformanceMetricsMiddleware>();
 
 app.UseSwagger();
 app.UseSwaggerUI();
-
-// Serve uploaded images (for CanhÃµes do Ano)
-app.UseStaticFiles();
 
 app.UseRateLimiter();
 
@@ -350,7 +361,7 @@ using (var scope = app.Services.CreateScope())
         .GetRequiredService<ILoggerFactory>()
         .CreateLogger("DatabaseSetup");
 
-    DatabaseSetupRunner.InitializeAsync(db, logger, webRootPath).GetAwaiter().GetResult();
+    await DatabaseSetupRunner.InitializeAsync(db, logger, webRootPath);
 }
 
 await app.RunAsync();

@@ -12,5 +12,7 @@ public interface ISecretSantaRepository
     void RemoveDraws(IEnumerable<SecretSantaDrawEntity> draws);
     void RemoveAssignments(IEnumerable<SecretSantaAssignmentEntity> assignments);
     Task<List<SecretSantaAssignmentEntity>> GetAssignmentsByDrawIdAsync(string drawId, CancellationToken ct);
+    Task<List<SecretSantaAssignmentEntity>> GetAssignmentsByDrawIdsAsync(IReadOnlyCollection<string> drawIds, CancellationToken ct);
+    Task AddAssignmentsRangeAsync(IEnumerable<SecretSantaAssignmentEntity> assignments, CancellationToken ct);
     Task SaveChangesAsync(CancellationToken ct);
 }

@@ -767,13 +767,12 @@ public sealed class AdminEventsController : EventControllerBase
     }
     private async Task<List<EventSummaryDto>> LoadEventSummariesAsync(CancellationToken ct)
     {
-        return (await _db.Events
+        return await _db.Events
             .AsNoTracking()
             .OrderByDescending(x => x.IsActive)
             .ThenBy(x => x.Name)
-            .ToListAsync(ct))
-            .Select(ToEventSummaryDto)
-            .ToList();
+            .Select(x => new EventSummaryDto(x.Id, x.Name, x.IsActive))
+            .ToListAsync(ct);
     }
 
     private async Task<EventAdminStateDto> BuildAdminStateDtoAsync(
@@ -787,6 +786,7 @@ public sealed class AdminEventsController : EventControllerBase
             eventId,
             Guid.Empty,
             isAdmin: false,
+            eventPhases,
             ct);
 
         var activePhaseEntity = memberModuleAccess.ActivePhase ?? eventPhases.FirstOrDefault(x => x.IsActive);
@@ -939,14 +939,21 @@ public sealed class AdminEventsController : EventControllerBase
         string eventId,
         CancellationToken ct)
     {
-        var awardCategories = await _db.AwardCategories
+        return await _db.AwardCategories
             .AsNoTracking()
             .Where(x => x.EventId == eventId)
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
+            .Select(x => new AwardCategoryDto(
+                x.Id,
+                x.Name,
+                x.SortOrder,
+                x.IsActive,
+                x.Kind.ToString(),
+                x.Description,
+                x.VoteQuestion,
+                x.VoteRules))
             .ToListAsync(ct);
-
-        return awardCategories.Select(ToAwardCategoryDto).ToList();
     }
 
     private async Task<AdminNomineeDto> BuildAdminNominationDtoAsync(
@@ -1110,21 +1117,30 @@ public sealed class AdminEventsController : EventControllerBase
         int take,
         CancellationToken ct)
     {
-        var memberDirectory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var members = memberDirectory.Members;
-        var usersLookup = memberDirectory.UsersById;
+        var totalCount = await _db.EventMembers
+            .AsNoTracking()
+            .CountAsync(x => x.EventId == eventId, ct);
 
-        var allMembers = members
-            .Where(member => usersLookup.ContainsKey(member.UserId))
-            .OrderByDescending(member => member.Role == EventRoles.Admin)
-            .ThenBy(member => GetUserName(usersLookup[member.UserId]))
-            .Select(member => ToPublicUserDto(
-                usersLookup[member.UserId],
-                member.Role == EventRoles.Admin))
-            .ToList();
+        if (totalCount == 0)
+            return new PagedResult<PublicUserDto>([], 0, skip, take, false);
 
-        var totalCount = allMembers.Count;
-        var pagedMembers = allMembers.Skip(skip).Take(take).ToList();
+        var pagedMembers = await _db.EventMembers
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId)
+            .Join(_db.Users.AsNoTracking(),
+                m => m.UserId,
+                u => u.Id,
+                (m, u) => new { User = u, Role = m.Role })
+            .OrderByDescending(x => x.Role == EventRoles.Admin)
+            .ThenBy(x => x.User.DisplayName ?? x.User.Email)
+            .Skip(skip)
+            .Take(take)
+            .Select(x => new PublicUserDto(
+                x.User.Id,
+                x.User.Email,
+                x.User.DisplayName,
+                x.Role == EventRoles.Admin))
+            .ToListAsync(ct);
 
         return new PagedResult<PublicUserDto>(
             pagedMembers,

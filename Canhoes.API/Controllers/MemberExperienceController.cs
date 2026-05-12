@@ -25,6 +25,7 @@ public class MemberExperienceController : EventControllerBase
         _memberService = memberService;
     }
     [HttpGet("{eventId}/members")]
+    [ResponseCache(Duration = 30, Location = ResponseCacheLocation.Client, VaryByQueryKeys = new[] { "eventId" })]
     public async Task<ActionResult<List<PublicUserDto>>> GetMembers([FromRoute] string eventId, CancellationToken ct)
     {
         var (_, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Wishlist, ct);
@@ -34,6 +35,7 @@ public class MemberExperienceController : EventControllerBase
     }
 
     [HttpGet("{eventId}/measures")]
+    [ResponseCache(Duration = 30, Location = ResponseCacheLocation.Client, VaryByQueryKeys = new[] { "eventId" })]
     public async Task<ActionResult<List<GalaMeasureDto>>> GetMeasures([FromRoute] string eventId, CancellationToken ct)
     {
         var (_, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Measures, ct);
@@ -56,98 +58,13 @@ public class MemberExperienceController : EventControllerBase
     }
 
     [HttpGet("{eventId}/results")]
+    [ResponseCache(Duration = 30, Location = ResponseCacheLocation.Client, VaryByQueryKeys = new[] { "eventId" })]
     public async Task<ActionResult<List<CanhoesCategoryResultDto>>> GetResults([FromRoute] string eventId, CancellationToken ct)
     {
         var (_, _, accessError) = await RequireEventModuleAccessAsync(eventId, EventModuleKey.Gala, ct);
         if (accessError is not null) return accessError;
 
-        var categories = await _db.AwardCategories
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.IsActive)
-            .OrderBy(x => x.SortOrder)
-            .ThenBy(x => x.Name)
-            .ToListAsync(ct);
-
-        if (categories.Count == 0) return Ok(new List<CanhoesCategoryResultDto>());
-
-        var categoryIds = categories.Select(x => x.Id).ToList();
-        var nominees = await _db.Nominees
-            .AsNoTracking()
-            .Where(x => x.EventId == eventId && x.CategoryId != null && x.Status == ProposalStatus.Approved)
-            .ToListAsync(ct);
-
-        var nomineeIds = nominees.Select(x => x.Id).ToList();
-        var nomineeVotes = nomineeIds.Count == 0
-            ? new List<VoteEntity>()
-            : await _db.Votes
-                .AsNoTracking()
-                .Where(x => nomineeIds.Contains(x.NomineeId))
-                .ToListAsync(ct);
-
-        var userVotes = await _db.UserVotes
-            .AsNoTracking()
-            .Where(x => categoryIds.Contains(x.CategoryId))
-            .ToListAsync(ct);
-
-        var memberDirectory = await LoadEventMemberDirectoryAsync(eventId, ct);
-        var nomineesByCategoryId = nominees
-            .GroupBy(x => x.CategoryId!)
-            .ToDictionary(group => group.Key, group => group.ToList());
-
-        var results = categories.Select(category =>
-        {
-            if (category.Kind == AwardCategoryKind.UserVote)
-            {
-                var topUsers = userVotes
-                    .Where(vote => vote.CategoryId == category.Id)
-                    .GroupBy(vote => vote.TargetUserId)
-                    .Select(group =>
-                    {
-                        var userName = memberDirectory.UsersById.TryGetValue(group.Key, out var user)
-                            ? GetUserName(user)
-                            : group.Key.ToString();
-
-                        return new CanhoesResultNomineeDto(
-                            group.Key.ToString(),
-                            category.Id,
-                            userName,
-                            null,
-                            group.Count());
-                    })
-                    .OrderByDescending(x => x.Votes)
-                    .ThenBy(x => x.Title)
-                    .Take(3)
-                    .ToList();
-
-                return new CanhoesCategoryResultDto(
-                    category.Id,
-                    category.Name,
-                    userVotes.Count(vote => vote.CategoryId == category.Id),
-                    topUsers);
-            }
-
-            var topNominees = (nomineesByCategoryId.TryGetValue(category.Id, out var categoryNominees)
-                    ? categoryNominees
-                    : [])
-                .Select(nominee => new CanhoesResultNomineeDto(
-                    nominee.Id,
-                    nominee.CategoryId,
-                    nominee.Title,
-                    MediaUrlFormatter.Normalize(nominee.ImageUrl),
-                    nomineeVotes.Count(vote => vote.NomineeId == nominee.Id)))
-                .OrderByDescending(x => x.Votes)
-                .ThenBy(x => x.Title)
-                .Take(3)
-                .ToList();
-
-            return new CanhoesCategoryResultDto(
-                category.Id,
-                category.Name,
-                nomineeVotes.Count(vote => vote.CategoryId == category.Id),
-                topNominees);
-        }).ToList();
-
-        return Ok(results);
+        return Ok(await _memberService.GetResultsAsync(eventId, ct));
     }
 
     [HttpGet("{eventId}/nominations/my-status")]

@@ -47,6 +47,14 @@ public sealed class SecretSantaRepository : ISecretSantaRepository
             .Where(x => x.DrawId == drawId)
             .ToListAsync(ct);
 
+    public Task<List<SecretSantaAssignmentEntity>> GetAssignmentsByDrawIdsAsync(IReadOnlyCollection<string> drawIds, CancellationToken ct) =>
+        _db.SecretSantaAssignments
+            .Where(x => drawIds.Contains(x.DrawId))
+            .ToListAsync(ct);
+
+    public async Task AddAssignmentsRangeAsync(IEnumerable<SecretSantaAssignmentEntity> assignments, CancellationToken ct) =>
+        await _db.SecretSantaAssignments.AddRangeAsync(assignments, ct);
+
     public Task SaveChangesAsync(CancellationToken ct) =>
         _db.SaveChangesAsync(ct);
 }

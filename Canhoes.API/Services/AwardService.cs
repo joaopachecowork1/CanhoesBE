@@ -84,14 +84,13 @@ public sealed class AwardService : IAwardService
 
     public async Task<PagedResult<AwardCategoryDto>> GetActiveCategoriesPagedAsync(string eventId, int skip, int take, CancellationToken ct)
     {
-        var categories = await _awardRepository.GetActiveCategoriesAsync(eventId, ct);
-        var paged = categories.Skip(skip).Take(take).ToList();
+        var (items, total) = await _awardRepository.GetActiveCategoriesPagedAsync(eventId, skip, take, ct);
         return new PagedResult<AwardCategoryDto>(
-            paged.Select(ToAwardCategoryDto).ToList(),
-            categories.Count,
+            items.Select(ToAwardCategoryDto).ToList(),
+            total,
             skip,
             take,
-            skip + take < categories.Count);
+            skip + take < total);
     }
 
     public async Task<PagedResult<CategoryProposalDto>> GetCategoryProposalsAsync(string eventId, string? status, int skip, int take, CancellationToken ct)

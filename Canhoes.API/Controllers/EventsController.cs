@@ -43,6 +43,7 @@ public sealed class EventsController : EventControllerBase
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A list of event summaries.</returns>
     [HttpGet]
+    [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Client)]
     public async Task<ActionResult<List<EventSummaryDto>>> ListEvents(CancellationToken ct)
     {
         const string cacheKey = "EventsList";

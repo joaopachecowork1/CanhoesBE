@@ -36,8 +36,6 @@ public class ErrorHandlingMiddleware
 
     private async Task HandleExceptionAsync(HttpContext context, Exception exception)
     {
-        _logger.LogError(exception, "Unhandled exception processing request {Method} {Path}.", context.Request.Method, context.Request.Path);
-
         var statusCode = (int)HttpStatusCode.InternalServerError;
         context.Response.StatusCode = statusCode;
         context.Response.ContentType = "application/problem+json";

@@ -23,6 +23,20 @@ public sealed class AwardRepository : IAwardRepository
             .OrderBy(x => x.SortOrder)
             .ToListAsync(ct);
 
+    public async Task<(List<AwardCategoryEntity> Items, int Total)> GetActiveCategoriesPagedAsync(string eventId, int skip, int take, CancellationToken ct)
+    {
+        var query = _db.AwardCategories
+            .AsNoTracking()
+            .Where(x => x.EventId == eventId && x.IsActive);
+        var total = await query.CountAsync(ct);
+        var items = await query
+            .OrderBy(x => x.SortOrder)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+        return (items, total);
+    }
+
     public Task<int?> GetMaxSortOrderAsync(string eventId, CancellationToken ct) =>
         _db.AwardCategories
             .AsNoTracking()

@@ -18,10 +18,11 @@ internal static class ControllerHelpers
         var feedRepository = new Canhoes.Api.Repositories.FeedRepository(db);
         var feedService = new Canhoes.Api.Services.FeedService(feedRepository, userRepository);
         var cache = new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        var awardService = new Canhoes.Api.Services.AwardService(awardRepository, userRepository, eventRepository);
         var eventService = new Canhoes.Api.Services.EventService(eventRepository, userRepository, awardRepository, secretSantaRepository, moduleAccessService, feedService, cache);
         var secretSantaService = new Canhoes.Api.Services.SecretSantaService(secretSantaRepository, userRepository, eventRepository);
 
-        var controller = new EventsController(eventService, secretSantaService, db, cache: cache)
+        var controller = new EventsController(eventService, awardService, secretSantaService, db, cache: cache)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

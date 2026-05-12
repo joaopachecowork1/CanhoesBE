@@ -75,12 +75,9 @@ public sealed class SecretSantaService : ISecretSantaService
 
         if (existingDraws.Count > 0)
         {
-            foreach (var existingDraw in existingDraws)
-            {
-                var existingAssignments = await _repository.GetAssignmentsByDrawIdAsync(existingDraw.Id, ct);
-                _repository.RemoveAssignments(existingAssignments);
-            }
-
+            var drawIds = existingDraws.Select(d => d.Id).ToList();
+            var existingAssignments = await _repository.GetAssignmentsByDrawIdsAsync(drawIds, ct);
+            _repository.RemoveAssignments(existingAssignments);
             _repository.RemoveDraws(existingDraws);
         }
 
@@ -119,17 +116,19 @@ public sealed class SecretSantaService : ISecretSantaService
 
             await _repository.AddDrawAsync(draw, ct);
 
+            var assignments = new List<SecretSantaAssignmentEntity>(participants.Count);
             for (var i = 0; i < participants.Count; i++)
             {
-                await _repository.AddAssignmentAsync(new SecretSantaAssignmentEntity
+                assignments.Add(new SecretSantaAssignmentEntity
                 {
                     Id = Guid.NewGuid().ToString(),
                     DrawId = draw.Id,
                     GiverUserId = participants[i].Id,
                     ReceiverUserId = shuffled[i].Id,
-                }, ct);
+                });
             }
 
+            await _repository.AddAssignmentsRangeAsync(assignments, ct);
             await _repository.SaveChangesAsync(ct);
             return SecretSantaDrawResult.Success(draw);
         }
